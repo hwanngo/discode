@@ -1,0 +1,63 @@
+# gitleaks configuration for discode.
+# Run: gitleaks detect --source . --config .gitleaks.toml
+# Or:  make secrets-scan
+
+title = "discode"
+
+[extend]
+# Inherit all default rules (AWS, GitHub, Stripe, OpenAI, etc.)
+useDefault = true
+
+# ── Project-specific rules ───────────────────────────────────────────────────
+
+[[rules]]
+id          = "discord-bot-token"
+description = "Discord bot token"
+# Format: MTxxxxxxxxxxxxxxxxxxxxxxxx.Xxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+regex       = '''[\w-]{24}\.[\w-]{6}\.[\w-]{27,38}'''
+keywords    = ["discord"]
+
+[[rules]]
+id          = "fernet-key"
+description = "Cryptography Fernet key (base64url, 44 chars ending in =)"
+regex       = '''[A-Za-z0-9_\-]{43}='''
+keywords    = ["fernet", "DEPLOYMENT_SECRET_KEY", "secret_key"]
+
+[[rules]]
+id          = "discode-runner-control-auth"
+description = "Discode runner control API shared secret"
+regex       = '''RUNNER_CONTROL_AUTH\s*=\s*[A-Za-z0-9+/\-_]{16,}'''
+keywords    = ["RUNNER_CONTROL_AUTH"]
+
+# ── Global allowlist ─────────────────────────────────────────────────────────
+
+[allowlist]
+description = "Placeholders, examples, and test fixtures"
+
+paths = [
+    '''.env\.example''',
+    '''\.gitleaks\.toml''',
+    # gitignored — real secrets never committed; suppress --no-git noise
+    '''^\.env$''',
+    # NOTE: whole-tree allowlists for tests/, docs/, and alembic/versions/ were
+    # intentionally removed. A real secret committed under those trees should be
+    # flagged. Illustrative/placeholder values are covered by the `regexes`
+    # allowlist below (changeme, your_, <your, etc.). If a specific fixture
+    # genuinely needs to carry a realistic-looking secret, allowlist that exact
+    # file path here — never re-add a whole directory.
+]
+
+regexes = [
+    # Placeholder values used in .env.example and docs
+    '''REPLACE_ME''',
+    '''changeme''',
+    '''your[_-]''',
+    '''your-secret''',
+    '''<your''',
+    # Fernet key shape but clearly a placeholder
+    '''DEPLOYMENT_SECRET_KEY=DEPLOYMENT_SECRET_KEY''',
+    '''RUNNER_CONTROL_AUTH=RUNNER_CONTROL_AUTH''',
+    # Local dev DB/Redis URLs (no real credentials)
+    '''postgresql\+asyncpg://discode:discode@localhost''',
+    '''redis://localhost''',
+]

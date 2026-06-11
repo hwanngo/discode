@@ -1,0 +1,43 @@
+# Local development only. Do not use these credentials in production.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: discode-postgres
+    environment:
+      POSTGRES_USER: discode
+      POSTGRES_PASSWORD: discode
+      POSTGRES_DB: discode
+    ports:
+      # Bind to loopback only so the DB is not exposed on all interfaces.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - discode-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U discode"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: discode-redis
+    # NOTE: no Redis password is set here because REDIS_URL (see .env.example)
+    # has no credentials for local dev; adding --requirepass would break the
+    # default wiring. PRODUCTION MUST enable Redis auth (requirepass) AND set a
+    # matching password in REDIS_URL. The loopback bind below is the local
+    # mitigation — do not rely on it as a substitute for auth in production.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # Bind to loopback only so Redis is not exposed on all interfaces.
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - discode-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  discode-postgres-data:
+  discode-redis-data:

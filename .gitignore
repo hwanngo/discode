@@ -1,0 +1,251 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+build/
+dist/
+sdist/
+*.egg
+*.egg-info/
+.eggs/
+*.whl
+wheels/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+share/python-wheels/
+MANIFEST
+PKG-INFO
+
+# ─── Virtual environments & package managers ────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.uv/
+__pypackages__/
+poetry.lock.*
+
+# ─── Test, coverage, lint, type-check caches ────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pyre/
+.pytype/
+.pyright/
+.nox/
+.tox/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+cython_debug/
+nosetests.xml
+
+# ─── Notebooks & profiling ───────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+profile_default/
+ipython_config.py
+.profile_results/
+
+# ─── Environment & secrets (NEVER commit) ────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+secrets/
+credentials/
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+fernet_keys.txt
+deployment_keys.txt
+
+# ─── Editors & IDEs ──────────────────────────────────────────────────────────
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.iml
+*.iws
+*.ipr
+.fleet/
+.zed/
+.helix/
+.nova/
+*.sublime-project
+*.sublime-workspace
+.spyderproject
+.spyproject
+.ropeproject
+.factorypath
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+*~
+*.un~
+.netrwhist
+tags
+TAGS
+.ctags
+.tern-port
+
+# ─── OS files ────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ─── Runtime output ──────────────────────────────────────────────────────────
+*.log
+*.log.*
+logs/
+*.pid
+*.pid.lock
+*.sock
+/run/
+.overmind.sock
+.overmind.env
+
+# ─── Databases & local containers ────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+alembic/scratch/
+docker-compose.override.yml
+docker-compose.local.yml
+.testcontainers/
+
+# ─── Temporary & scratch ─────────────────────────────────────────────────────
+tmp/
+temp/
+scratch/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+*.swap
+
+# ─── Local test data ─────────────────────────────────────────────────────────
+tests/fixtures/local/
+tests/data/local/
+
+# ─── Local process manager overrides ─────────────────────────────────────────
+Procfile.local
+Library/
+
+# ─── Git worktrees ───────────────────────────────────────────────────────────
+.worktrees/
+
+# ─── Node.js (only if you ever vendor JS tooling here) ──────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.yarn/
+.pnp.*
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI assistants / agentic coding tools — local state, caches, and per-user
+# scratch directories. None of these belong in version control.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Claude Code (Anthropic CLI / VS Code extension)
+.claude/
+.claude.json
+.claude.local.json
+CLAUDE.local.md
+
+# Cursor IDE
+.cursor/
+.cursorignore
+.cursorrules
+
+# Windsurf / Codeium
+.windsurf/
+.codeium/
+
+# GitHub Copilot
+.copilot/
+.github-copilot/
+
+# Cody (Sourcegraph)
+.sourcegraph/
+.cody/
+
+# Aider
+.aider*
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v3/
+
+# OpenAI Codex / OpenCode CLIs
+.codex/
+.opencode/
+
+# Continue (continue.dev)
+.continue/
+
+# Tabnine
+.tabnine/
+
+# Pi coding agent
+.pi/
+
+# Cline
+.cline/
+.clinerules
+
+# Goose (Block)
+.goose/
+
+# Gemini CLI
+.gemini/
+GEMINI.local.md
+
+# AGENTS.md companion / per-user agent notes
+AGENTS.local.md
+
+# gstack / GSD planning trees
+.gstack/
+.planning/
+.gsd/
+
+# Generic per-user agent caches & memory
+.cache/
+memory/
+.memory/
+.history/
+*.agent.local.md
+
+# Project-local docs that shouldn't ship publicly
+docs.local/
+
+# Linux/XDG per-user data dirs that some tools drop into the project root
+.local/
+.ai-workspace/
