@@ -18,8 +18,8 @@ dependencies = [
     "pydantic-settings>=2.14.2",  # >=2.14.2 fixes GHSA NestedSecretsSettingsSource symlink local-file-read
     "starlette>=1.3.1",  # >=1.3.1 fixes GHSA form() limits silently ignored urlencoded DoS (transitive via fastapi)
     "structlog>=24",
-    "cryptography>=42",
-    "aiohttp>=3.14",  # >=3.14 fixes GHSA cross-origin-redirect + untrusted-deserialization
+    "cryptography>=50",  # >=50 fixes GHSA-g6cj-pr64-35w5 PKCS#7 EnvelopedData Bleichenbacher oracle
+    "aiohttp>=3.14.3",  # >=3.14.3 fixes GHSA-cq5v-8q36-5273, GHSA-mfx4-hv73-q22v, GHSA-mq44-7p77-q5h7
 ]
 
 [project.scripts]
