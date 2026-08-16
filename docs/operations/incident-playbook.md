@@ -110,7 +110,7 @@ Use these steps to fully reset a local dev environment.
 
 ### Kill all processes
 
-If `make dev` (overmind) is stuck or processes are orphaned:
+If `just dev` (overmind) is stuck or processes are orphaned:
 
 ```bash
 overmind stop
@@ -156,7 +156,7 @@ redis-cli FLUSHDB
 If the schema is out of date after pulling new code:
 
 ```bash
-make migrate
+just migrate
 ```
 
 ### Full local reset sequence
@@ -165,8 +165,8 @@ make migrate
 overmind stop          # or pkill as above
 docker compose down    # stop Postgres and Redis containers
 docker compose up -d postgres redis   # restart fresh (data is NOT wiped unless you remove volumes)
-make migrate           # reapply migrations (single squashed migration: 0001_initial)
-make dev               # restart all processes
+just migrate           # reapply migrations (single squashed migration: 0001_initial)
+just dev               # restart all processes
 ```
 
 To wipe all data (including Postgres volumes):
@@ -174,5 +174,5 @@ To wipe all data (including Postgres volumes):
 ```bash
 docker compose down -v   # removes named volumes
 docker compose up -d postgres redis
-make migrate
+just migrate
 ```

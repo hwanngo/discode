@@ -42,35 +42,35 @@ discode-bot ─► outbox (input:jobs:<host>) ─► discode-runner
 
 | Process              | Entry point        | Role                                                                  |
 | -------------------- | ------------------ | --------------------------------------------------------------------- |
-| `discode-bot`        | `make bot`         | Discord gateway; slash commands and thread message routing            |
-| `discode-runner`     | `make runner`      | Spawns tool subprocesses; hosts the loopback control API on `:8788`   |
-| `discode-dispatcher` | `make dispatcher`  | Drains the outbox to Discord (system notices, archive, terminal)      |
-| `discode-janitor`    | `make janitor`     | Periodic sweeps: TTL, watchdogs, thread-bind repair                   |
+| `discode-bot`        | `just bot`         | Discord gateway; slash commands and thread message routing            |
+| `discode-runner`     | `just runner`      | Spawns tool subprocesses; hosts the loopback control API on `:8788`   |
+| `discode-dispatcher` | `just dispatcher`  | Drains the outbox to Discord (system notices, archive, terminal)      |
+| `discode-janitor`    | `just janitor`     | Periodic sweeps: TTL, watchdogs, thread-bind repair                   |
 
 All four share one Postgres database and one Redis instance.
 
 ## Quick start (local dev)
 
 **Prerequisites:** Python ≥ 3.14, [uv](https://docs.astral.sh/uv/),
-Docker, [overmind](https://github.com/DarthSim/overmind), and one or more tool CLIs
-(`claude`, `codex`, `opencode`, etc.) on `PATH`.
+[just](https://just.systems/), Docker, [overmind](https://github.com/DarthSim/overmind),
+and one or more tool CLIs (`claude`, `codex`, `opencode`, etc.) on `PATH`.
 
 ```bash
 # 1. Install dependencies
-make install
+just install
 
 # 2. Start Postgres + Redis containers
-make infra
+just infra
 
 # 3. Configure
 cp .env.example .env
 $EDITOR .env
 
 # 4. Run migrations
-make migrate
+just migrate
 
 # 5. Start every process
-make dev
+just dev
 ```
 
 Stop with `Ctrl-C` inside the overmind session, or `overmind stop` from another terminal.
@@ -258,10 +258,12 @@ the **runner host as the trust boundary** and keep these properties in mind when
 ## Development
 
 ```bash
-make lint       # ruff check
-make typecheck  # mypy --strict
-make test       # pytest
-make check      # lint + typecheck + test
+just            # list every recipe, grouped
+just lint       # ruff check
+just typecheck  # mypy --strict
+just test       # pytest — extra args pass through: just test tests/bot_sessions -k resume
+just check      # lint + typecheck + test
+just audit      # pip-audit the locked dependency tree
 ```
 
 The `scripts/diag.py` helper exercises the full pipeline from outside Discord — useful when

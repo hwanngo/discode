@@ -157,6 +157,6 @@ See the [incident playbook — sync drift](incident-playbook.md#sync-drift).
 
 ### Bot not responding at all
 
-1. Verify the bot process is running: `make bot` or check `overmind status`.
+1. Verify the bot process is running: `just bot` or check `overmind status`.
 2. Confirm `DISCORD_TOKEN` in `.env` is valid and the bot is invited to the server.
 3. Check bot logs for connection errors.
