@@ -40,6 +40,17 @@ class ToolAdapter(ABC):
         """Whether ``exec_cmd`` requires a PTY (codex/opencode do; claude does not)."""
         return False
 
+    def mint_initial_token(self) -> str | None:
+        """Resume token to assign at session creation, before the first turn.
+
+        Most tools emit their own session id, which the runner scrapes from
+        output via :meth:`parse_resume_token` after turn one. Tools that accept
+        a *caller-assigned* id instead (e.g. ``pi --session-id``) return one
+        here, so every turn — including the first — names the same session.
+        ``None`` means "no token until the tool gives us one".
+        """
+        return None
+
     def parse_resume_token(self, stdout: str, stderr: str) -> str | None:
         """Extract a fresh resume token from worker output; ``None`` if absent."""
         return None

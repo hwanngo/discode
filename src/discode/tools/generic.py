@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from typing import Any
 
 from .base import ToolAdapter
 from .errors import BadToolDefinition
 
-_VALID_RESUME_SOURCES = {"none", "stdout_regex", "stderr_regex", "json_field", "sentinel"}
+_VALID_RESUME_SOURCES = {
+    "none",
+    "stdout_regex",
+    "stderr_regex",
+    "json_field",
+    "sentinel",
+    # caller_uuid: discode mints the session id at session creation and passes
+    # it on every turn, including the first. Nothing is scraped from output, so
+    # parse_resume_token must stay None-returning or it would clobber the id.
+    "caller_uuid",
+}
+
+# Sources that carry no pattern: "none" and "sentinel" by construction,
+# "caller_uuid" because the token is generated rather than matched.
+_PATTERNLESS_SOURCES = {"none", "sentinel", "caller_uuid"}
 _VALID_REPLY_EXTRACTORS = {"stdout_raw", "stdout_strip_ansi", "json_field", "stderr_fallback"}
 
 # CSI / OSC / single-char escape sequences emitted by TUI tools — must be
@@ -59,7 +74,7 @@ class GenericAdapter(ToolAdapter):
                     d.name,
                     "argv_resume_tokens missing {token} (only allowed for sentinel source)",
                 )
-        if d.resume_token_source not in {"none", "sentinel"} and not d.resume_token_pattern:
+        if d.resume_token_source not in _PATTERNLESS_SOURCES and not d.resume_token_pattern:
             raise BadToolDefinition(
                 d.name,
                 f"resume_token_source={d.resume_token_source} requires resume_token_pattern",
@@ -86,6 +101,11 @@ class GenericAdapter(ToolAdapter):
 
     def exec_uses_pty(self) -> bool:
         return bool(self._d.uses_pty)
+
+    def mint_initial_token(self) -> str | None:
+        if self._d.resume_token_source == "caller_uuid":
+            return str(uuid.uuid4())
+        return None
 
     def parse_resume_token(self, stdout: str, stderr: str) -> str | None:
         d = self._d

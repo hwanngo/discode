@@ -170,6 +170,14 @@ async def run_create_job(
                 "create job: unknown tool %s for session %s", exc.name, payload.session_id
             )
             raise CreateJobError(f"unknown or disabled tool: {exc.name}") from exc
+    # Tools that take a caller-assigned session id (resume_token_source=
+    # "caller_uuid") need the token to exist before turn one, so exec_cmd names
+    # the same session on every turn. A token carried in on the payload
+    # (resume-by-name) always wins over a freshly minted one.
+    _resume_token = payload.resume_token
+    if _resume_token is None:
+        _resume_token = adapter.mint_initial_token()
+
     _venv_bin = str(os.path.dirname(sys.executable))
     _tool_paths = ":".join(adapter.extra_paths())
     _base_path = f"{_venv_bin}:/usr/local/bin:/usr/bin:/bin"
@@ -200,8 +208,8 @@ async def run_create_job(
                 hook_secret_ciphertext=payload.hook_secret_ciphertext,
                 recovery_checked_at=func.now(),
             )
-            if payload.resume_token is not None:
-                update_values["tool_resume_token"] = payload.resume_token
+            if _resume_token is not None:
+                update_values["tool_resume_token"] = _resume_token
 
             upd_result = await db.execute(
                 update(SessionModel)
@@ -261,7 +269,7 @@ async def run_create_job(
             tool=payload.tool,
             cwd=payload.cwd_realpath,
             env=session_env,
-            tool_resume_token=payload.resume_token,
+            tool_resume_token=_resume_token,
             guild_id=payload.guild_id,
             thread_id=payload.thread_id,
             host_id=host_id,

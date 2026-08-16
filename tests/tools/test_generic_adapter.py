@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -172,6 +173,80 @@ def test_resume_json_field_returns_none_when_key_missing():
         )
     )
     assert a.parse_resume_token('{"other":"x"}', "") is None
+
+
+# === caller_uuid: discode mints the session id instead of scraping it ===
+
+
+def test_caller_uuid_is_a_valid_resume_source():
+    a = GenericAdapter(
+        _row(argv_resume_tokens=["--session-id", "{token}"], resume_token_source="caller_uuid")
+    )
+    assert a.name == "t"
+
+
+def test_caller_uuid_does_not_require_a_resume_token_pattern():
+    a = GenericAdapter(
+        _row(
+            argv_resume_tokens=["--session-id", "{token}"],
+            resume_token_source="caller_uuid",
+            resume_token_pattern=None,
+        )
+    )
+    assert a.parse_resume_token("", "") is None
+
+
+def test_caller_uuid_requires_token_placeholder_in_resume_tokens():
+    with pytest.raises(BadToolDefinition):
+        GenericAdapter(_row(argv_resume_tokens=["--session-id"], resume_token_source="caller_uuid"))
+
+
+def test_caller_uuid_never_overwrites_the_minted_token():
+    """The runner persists parse_resume_token()'s result; returning anything
+    non-None here would clobber the id discode assigned at session creation."""
+    a = GenericAdapter(
+        _row(argv_resume_tokens=["--session-id", "{token}"], resume_token_source="caller_uuid")
+    )
+    assert a.parse_resume_token('{"session_id":"other"}', "session id: other") is None
+
+
+def test_mint_initial_token_returns_none_for_scraped_sources():
+    for src, pat in [
+        ("none", None),
+        ("sentinel", "opencode"),
+        ("stdout_regex", r"id=(\w+)"),
+        ("stderr_regex", r"id=(\w+)"),
+        ("json_field", "session_id"),
+    ]:
+        a = GenericAdapter(_row(resume_token_source=src, resume_token_pattern=pat))
+        assert a.mint_initial_token() is None, src
+
+
+def test_mint_initial_token_returns_a_uuid_for_caller_uuid():
+    a = GenericAdapter(
+        _row(argv_resume_tokens=["--session-id", "{token}"], resume_token_source="caller_uuid")
+    )
+    token = a.mint_initial_token()
+    assert token is not None
+    assert uuid.UUID(token)  # raises if not a well-formed UUID
+
+
+def test_mint_initial_token_is_unique_per_call():
+    """Two sessions on the same tool must not share a session id, or the
+    second would resume into the first one's conversation."""
+    a = GenericAdapter(
+        _row(argv_resume_tokens=["--session-id", "{token}"], resume_token_source="caller_uuid")
+    )
+    assert a.mint_initial_token() != a.mint_initial_token()
+
+
+def test_caller_uuid_passes_token_on_the_very_first_turn():
+    """Unlike scraped sources, the token exists before turn 1, so argv must
+    carry it immediately — that is what makes turn 1 and turn 2 one session."""
+    a = GenericAdapter(
+        _row(argv_resume_tokens=["--session-id", "{token}"], resume_token_source="caller_uuid")
+    )
+    assert a.exec_cmd("hi", resume_token="UUID-1") == ["t", "--session-id", "UUID-1", "hi"]
 
 
 # === Reply extractors ===

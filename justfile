@@ -128,6 +128,11 @@ test *args:
 test-fast *args:
     uv run pytest -x "$@" || [ $? -eq 5 ]
 
+# Conformance-probe a tool definition against the real binary. Usage: just tool-probe pi [--live]
+[group('quality')]
+tool-probe *args:
+    uv run python scripts/tool_probe.py "$@"
+
 # Scan for leaked secrets with gitleaks.
 [group('quality')]
 secrets-scan:
