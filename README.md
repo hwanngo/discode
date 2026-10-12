@@ -57,8 +57,9 @@ and one or more supported tool CLIs (`claude`, `codex`, etc.) on `PATH`.
 OpenCode is seeded but disabled (migration `0004`): its latest-session continuation has no explicit session identity, so it cannot run until that is supported.
 
 ```bash
-# 1. Install dependencies
+# 1. Install dependencies (and the gitleaks pre-commit hook; needs `pre-commit`)
 just install
+pre-commit install
 
 # 2. Start Postgres + Redis containers
 just infra

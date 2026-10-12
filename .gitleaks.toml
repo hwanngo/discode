@@ -1,6 +1,6 @@
 # gitleaks configuration for discode.
 # Run: gitleaks detect --source . --config .gitleaks.toml
-# Or:  make secrets-scan
+# Or:  just secrets-scan  (also runs in CI and as a pre-commit hook)
 
 title = "discode"
 
