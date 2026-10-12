@@ -33,16 +33,28 @@ class _FakeClientTransport(ASGITransport):
 
 
 @pytest.fixture
-async def loopback_client() -> AsyncGenerator[AsyncClient]:
+async def loopback_client(monkeypatch) -> AsyncGenerator[AsyncClient]:
+    from discode.config import settings
+
+    monkeypatch.setattr(settings._load(), "RUNNER_CONTROL_AUTH", "test-bearer")
+    monkeypatch.setattr(settings._load(), "SESSION_ISOLATION_MODE", "trusted_host")
     transport = _FakeClientTransport(fake_client_host="127.0.0.1", app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"Authorization": "Bearer test-bearer"},
+    ) as client:
         yield client
 
 
 @pytest.fixture
 async def non_loopback_client() -> AsyncGenerator[AsyncClient]:
     transport = _FakeClientTransport(fake_client_host="203.0.113.1", app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"Authorization": "Bearer test-bearer"},
+    ) as client:
         yield client
 
 

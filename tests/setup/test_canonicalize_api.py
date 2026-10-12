@@ -28,9 +28,16 @@ class _LoopbackTransport(ASGITransport):
 
 
 @pytest.fixture
-async def loopback_client() -> AsyncGenerator[AsyncClient]:
+async def loopback_client(monkeypatch) -> AsyncGenerator[AsyncClient]:
+    from discode.config import settings
+
+    monkeypatch.setattr(settings._load(), "RUNNER_CONTROL_AUTH", "test-bearer")
     transport = _LoopbackTransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"Authorization": "Bearer test-bearer"},
+    ) as client:
         yield client
 
 
@@ -68,3 +75,9 @@ async def test_canonicalize_returns_required_fields(loopback_client: AsyncClient
     assert isinstance(data["realpath"], str)
     assert isinstance(data["exists"], bool)
     assert isinstance(data["is_dir"], bool)
+
+
+@pytest.mark.parametrize("payload", [{"path": "\x00"}, {"path": []}, [], {"path": ""}])
+async def test_canonicalize_rejects_malformed_paths(loopback_client, payload):
+    response = await loopback_client.post("/v1/canonicalize_path", json=payload)
+    assert response.status_code == 422

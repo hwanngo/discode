@@ -67,10 +67,11 @@ db-history:
 revision msg:
     uv run --env-file .env alembic revision --autogenerate -m {{ quote(msg) }}
 
-# Run all app processes from Procfile with overmind.
+# Run all app processes from Procfile with overmind. The 35s stop timeout exceeds
+# RUNNER_DRAIN_TIMEOUT_SECONDS so in-flight tool turns can finish on Ctrl-C.
 [group('run')]
 dev:
-    uv run overmind start
+    uv run overmind start --timeout 35
 
 # Force-stop overmind managed dev processes.
 [group('run')]
@@ -101,17 +102,17 @@ janitor:
 # Format source and tests with ruff.
 [group('quality')]
 format:
-    uv run ruff format src tests
+    uv run ruff format src tests scripts
 
 # Lint source and tests.
 [group('quality')]
 lint:
-    uv run ruff check src tests
+    uv run ruff check src tests scripts
 
 # Apply safe ruff fixes.
 [group('quality')]
 lint-fix:
-    uv run ruff check --fix src tests
+    uv run ruff check --fix src tests scripts
 
 # Run strict mypy checks for the package.
 [group('quality')]
@@ -121,12 +122,12 @@ typecheck:
 # Run pytest. Usage: just test [tests/path -k expr]
 [group('quality')]
 test *args:
-    uv run pytest "$@" || [ $? -eq 5 ]
+    uv run pytest "$@"
 
 # Run tests, stopping at the first failure. Usage: just test-fast [tests/path]
 [group('quality')]
 test-fast *args:
-    uv run pytest -x "$@" || [ $? -eq 5 ]
+    uv run pytest -x "$@"
 
 # Conformance-probe a tool definition against the real binary. Usage: just tool-probe pi [--live]
 [group('quality')]

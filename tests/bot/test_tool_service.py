@@ -23,6 +23,18 @@ from discode.db.models import Guild, GuildAdminRolePolicy
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def platform_admin_settings(monkeypatch):
+    from types import SimpleNamespace
+
+    import discode.config
+
+    monkeypatch.setattr(
+        discode.config, "settings", SimpleNamespace(platform_admin_user_ids={"platform"})
+    )
+
+
 ADMIN_ROLE_ID = "999"
 ADMIN_ROLE_NAME = "admin"
 NON_ADMIN_ROLE_NAMES = ["member"]
@@ -92,7 +104,8 @@ async def test_register_tool_happy(db_session, guild_with_admin_role):
         guild_id=guild_with_admin_role.guild_id,
         name="myaider",
         config=_valid_cfg(),
-        created_by="user1",
+        created_by="platform",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -122,7 +135,8 @@ async def test_register_tool_rejects_bad_name(db_session, guild_with_admin_role)
         guild_id=guild_with_admin_role.guild_id,
         name="UPPER",
         config=_valid_cfg(),
-        created_by="u",
+        created_by="platform",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -137,7 +151,8 @@ async def test_register_tool_rejects_argv_suffix_without_prompt(db_session, guil
         guild_id=guild_with_admin_role.guild_id,
         name="ok",
         config=_valid_cfg(argv_suffix=["nope"]),
-        created_by="u",
+        created_by="platform",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -182,6 +197,7 @@ async def test_disable_then_enable(db_session, guild_with_admin_role):
         db_session,
         guild_id=guild_with_admin_role.guild_id,
         name="claude",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -192,6 +208,7 @@ async def test_disable_then_enable(db_session, guild_with_admin_role):
         db_session,
         guild_id=guild_with_admin_role.guild_id,
         name="claude",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -212,6 +229,7 @@ async def test_update_field(db_session, guild_with_admin_role):
         name="claude",
         field="display_name",
         value="Claude (renamed)",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -227,6 +245,7 @@ async def test_update_field_rejects_immutable(db_session, guild_with_admin_role)
         name="claude",
         field="name",
         value="x",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -244,6 +263,7 @@ async def test_remove_unknown_tool(db_session, guild_with_admin_role):
         db_session,
         guild_id=guild_with_admin_role.guild_id,
         name="nope",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )
@@ -258,6 +278,7 @@ async def test_update_tool_api_key_env(db_session, guild_with_admin_role):
         name="opencode",
         field="api_key_env",
         value="OPENCODE_API_KEY",
+        user_id="platform",
         member_roles=guild_with_admin_role.admin_role_ids,
         member_role_names=guild_with_admin_role.admin_role_names,
     )

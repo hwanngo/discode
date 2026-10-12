@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
+
+from discode.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,20 @@ class RunnerConsumerGroup:
         """XACK the message."""
         await self.redis.xack(self.stream_key, self.group, message_id)
 
+    @property
+    def dead_letter_key(self) -> str:
+        return f"discode:deadletter:{self.stream_key}"
+
+    async def dead_letter(
+        self, message_id: str, fields: dict[str, str], *, reason: str, attempts: int
+    ) -> None:
+        """Atomically retain an unprocessable entry in a Redis hash, then XACK it."""
+        record = json.dumps({"fields": fields, "reason": reason, "attempts": attempts})
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.hset(self.dead_letter_key, message_id, record)
+            pipe.xack(self.stream_key, self.group, message_id)
+            await pipe.execute()
+
     async def delivery_count(self, message_id: str) -> int:
         """Return the XPENDING delivery count for a specific message_id, or 0."""
         try:
@@ -83,7 +100,7 @@ class RunnerConsumerGroup:
         self, min_idle_ms: int | None = None
     ) -> list[tuple[str, dict[str, str]]]:
         """XAUTOCLAIM messages idle longer than min_idle_ms. Returns [(msg_id, fields), ...]"""
-        idle = min_idle_ms or RUNNER_JOB_PEL_IDLE_MS
+        idle = min_idle_ms or get_settings().RUNNER_JOB_PEL_IDLE_MS
         result = await self.redis.xautoclaim(
             self.stream_key,
             self.group,

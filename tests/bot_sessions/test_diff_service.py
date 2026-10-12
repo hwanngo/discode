@@ -56,7 +56,7 @@ async def test_fetch_diff_preview_success(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("RUNNER_CONTROL_BIND", "127.0.0.1:8788")
     monkeypatch.setattr(diff_service.httpx, "AsyncClient", _OkClient)
 
-    result = await diff_service.fetch_diff_preview("/tmp/repo")
+    result = await diff_service.fetch_diff_preview("/tmp/repo", session_id="sid", guild_id="gid")
 
     assert result.patch.startswith("diff --git")
     assert result.truncated is False
@@ -67,7 +67,7 @@ async def test_fetch_diff_preview_network_error(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(diff_service.httpx, "AsyncClient", _ConnectFailClient)
 
     with pytest.raises(ValueError, match="Failed to fetch diff preview:"):
-        await diff_service.fetch_diff_preview("/tmp/repo")
+        await diff_service.fetch_diff_preview("/tmp/repo", session_id="sid", guild_id="gid")
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_fetch_diff_preview_non_200(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(diff_service.httpx, "AsyncClient", _Non200Client)
 
     with pytest.raises(ValueError, match="cwd_must_be_directory"):
-        await diff_service.fetch_diff_preview("/tmp/repo")
+        await diff_service.fetch_diff_preview("/tmp/repo", session_id="sid", guild_id="gid")
 
 
 class _WrongTypesClient:
@@ -113,7 +113,7 @@ async def test_fetch_diff_preview_wrong_payload_types(monkeypatch: pytest.Monkey
     monkeypatch.setattr(diff_service.httpx, "AsyncClient", _WrongTypesClient)
 
     with pytest.raises(ValueError, match="invalid response payload"):
-        await diff_service.fetch_diff_preview("/tmp/repo")
+        await diff_service.fetch_diff_preview("/tmp/repo", session_id="sid", guild_id="gid")
 
 
 @pytest.mark.asyncio
@@ -121,4 +121,4 @@ async def test_fetch_diff_preview_non_json_body(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(diff_service.httpx, "AsyncClient", _NonJsonClient)
 
     with pytest.raises(ValueError, match="invalid response payload"):
-        await diff_service.fetch_diff_preview("/tmp/repo")
+        await diff_service.fetch_diff_preview("/tmp/repo", session_id="sid", guild_id="gid")

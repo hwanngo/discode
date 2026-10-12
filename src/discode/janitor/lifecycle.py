@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from discode.bot.session_service import bind_session_thread
+from discode.config import get_settings
 from discode.db.models import RedisOutbox
 from discode.db.models import Session as SessionModel
 from discode.queues.outbox import write_outbox
@@ -30,7 +31,8 @@ async def sweep_runner_heartbeat_orphans(
                     UPDATE runner_hosts
                     SET status = 'offline'
                     WHERE status = 'online'
-                      AND last_heartbeat_at < now() - interval '{orphan_recovery_ttl_hours} hours'
+                      AND last_heartbeat_at < now()
+                        - interval '{get_settings().RUNNER_HEARTBEAT_STALE_SECONDS} seconds'
                 """),
             )
 

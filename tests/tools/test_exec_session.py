@@ -196,3 +196,88 @@ async def test_timeout_kills_grandchild_process(tmp_path, use_pty: bool) -> None
         except ProcessLookupError:
             pass
     assert not alive, f"grandchild pid {gc_pid} survived timeout kill (leak)"
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-12 #5: truncation must not kill; runaway output must fail.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_pty", [False, True])
+async def test_truncation_lets_process_finish(tmp_path, use_pty) -> None:
+    """Output past the keep cap is dropped, but the process keeps running to completion."""
+    marker = tmp_path / "finished"
+    program = (
+        "import sys, pathlib\n"
+        "sys.stdout.write('x' * 200_000)\n"
+        "sys.stdout.flush()\n"
+        f"pathlib.Path({str(marker)!r}).write_text('ok')\n"
+    )
+    sess = ExecSession(
+        argv=[_PY, "-c", program], cwd="/tmp", env=_ENV, use_pty=use_pty, max_output_bytes=1024
+    )
+    result = await sess.run(timeout=10.0)
+    assert result.exit_code == 0
+    assert "[truncated" in result.text
+    assert marker.read_text() == "ok"
+
+
+@pytest.mark.asyncio
+async def test_runaway_output_is_killed_and_reported_as_failure() -> None:
+    sess = ExecSession(
+        argv=[_PY, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536)"],
+        cwd="/tmp",
+        env=_ENV,
+        use_pty=False,
+        max_output_bytes=1024,
+        kill_output_bytes=1024 * 1024,
+    )
+    with pytest.raises(ExecFailed) as info:
+        await sess.run(timeout=10.0)
+    assert "killed: output exceeded" in info.value.stderr
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_not_hidden_by_truncation() -> None:
+    sess = ExecSession(
+        argv=[_PY, "-c", "import sys; sys.stdout.write('x' * 10_000); sys.exit(3)"],
+        cwd="/tmp",
+        env=_ENV,
+        use_pty=False,
+        max_output_bytes=1024,
+    )
+    with pytest.raises(ExecFailed) as info:
+        await sess.run(timeout=10.0)
+    assert info.value.exit_code == 3
+
+
+@pytest.mark.asyncio
+async def test_background_child_holding_pipe_does_not_cause_timeout() -> None:
+    """A backgrounded child inheriting stdout must not turn a finished run into a timeout."""
+    program = (
+        "import subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print('done')\n"
+    )
+    sess = ExecSession(argv=[_PY, "-c", program], cwd="/tmp", env=_ENV, use_pty=False)
+    start = time.monotonic()
+    result = await sess.run(timeout=20.0)
+    assert "done" in result.text
+    assert time.monotonic() - start < 10.0
+
+
+@pytest.mark.asyncio
+async def test_descendant_outside_group_holding_pipe_does_not_hang() -> None:
+    """Review 2026-10-12: a setsid'd child keeping stdout open must not stall to the timeout."""
+    program = (
+        "import os, subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],"
+        " start_new_session=True)\n"
+        "print('done', flush=True)\n"
+    )
+    sess = ExecSession(argv=[_PY, "-c", program], cwd="/tmp", env=_ENV, use_pty=False)
+    start = time.monotonic()
+    result = await sess.run(timeout=25.0)
+    assert "done" in result.text
+    assert time.monotonic() - start < 15.0

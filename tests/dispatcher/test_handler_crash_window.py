@@ -28,6 +28,10 @@ class _FakeResult:
     def fetchone(self):
         return self._row
 
+    def scalar_one(self):
+        assert self._row is not None
+        return self._row[0]
+
 
 class _FakeDB:
     """A single async-session-like object backed by shared state.
@@ -98,6 +102,14 @@ class _FakeDB:
             return _FakeResult(None)
 
         return _FakeResult(None)
+
+    async def scalar(self, statement, params=None):
+        sql = " ".join(str(statement).split())
+        if sql.startswith("SELECT status FROM sessions"):
+            return (
+                self._store["sessions"].get((params or {}).get("sid"), {}).get("status", "archived")
+            )
+        return None
 
     @staticmethod
     def _etype_from_sql(sql: str, params: dict) -> str:
@@ -248,17 +260,13 @@ async def test_archive_thread_retries_after_discord_failure() -> None:
 
     failing = AsyncMock(side_effect=RuntimeError("archive 500"))
     with pytest.raises(RuntimeError):
-        await handle_archive_thread(
-            envelope, db_factory=db, archive_discord_thread=failing
-        )
+        await handle_archive_thread(envelope, db_factory=db, archive_discord_thread=failing)
 
     # DB must NOT be marked archived after the failure.
     assert store["sessions"].get("s1", {}).get("discord_thread_archived_at") is None
 
     good = AsyncMock()
-    result = await handle_archive_thread(
-        envelope, db_factory=db, archive_discord_thread=good
-    )
+    result = await handle_archive_thread(envelope, db_factory=db, archive_discord_thread=good)
     assert result is True
     good.assert_awaited_once()
     # Now it should be marked archived.
@@ -290,3 +298,18 @@ async def test_archive_thread_happy_path_marks_db() -> None:
     assert result is True
     arch.assert_awaited_once()
     assert store["sessions"]["s1"]["discord_thread_archived_at"] == "now"
+
+
+@pytest.mark.asyncio
+async def test_archive_thread_skips_resumed_session() -> None:
+    """Audit 2026-10-12: a delayed archive must not archive a session resumed meanwhile."""
+    store = _new_store()
+    store["sessions"]["s1"] = {"status": "running"}
+    db = _FakeDB(store)
+    archive = AsyncMock()
+    envelope = {"session_id": "s1", "thread_id": "t1", "idempotency_key": "k1"}
+
+    assert await handle_archive_thread(envelope, db_factory=db, archive_discord_thread=archive)
+
+    archive.assert_not_awaited()
+    assert "discord_thread_archived_at" not in store["sessions"]["s1"]

@@ -24,3 +24,8 @@ def test_engine_has_pool_pre_ping(db_url: str) -> None:
     """Engine is created with pool_pre_ping=True."""
     engine = make_engine(db_url)
     assert engine.pool._pre_ping is True  # type: ignore[attr-defined]
+
+
+def test_engine_hides_sql_bind_values_in_errors():
+    engine = make_engine("postgresql+asyncpg://test:test@127.0.0.1:1/test")
+    assert engine.sync_engine.hide_parameters is True

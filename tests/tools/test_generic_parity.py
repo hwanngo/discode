@@ -99,6 +99,10 @@ def test_extract_reply(
 def test_argv_cold(
     name, stdout_t, stderr_t, exp_token, exp_reply, stdout_n, stderr_n, exp_no_token
 ):
+    if name == "opencode":
+        with pytest.raises(ValueError, match="sentinel resume is disabled"):
+            _generic(name).exec_cmd("hi", resume_token=None)
+        return
     argv = _generic(name).exec_cmd("hi", resume_token=None)
     assert argv[0] == name
     assert argv[-1] == "hi"
@@ -108,5 +112,9 @@ def test_argv_cold(
 def test_argv_resume(
     name, stdout_t, stderr_t, exp_token, exp_reply, stdout_n, stderr_n, exp_no_token
 ):
+    if name == "opencode":
+        with pytest.raises(ValueError, match="sentinel resume is disabled"):
+            _generic(name).exec_cmd("hi", resume_token="TOK")
+        return
     argv = _generic(name).exec_cmd("hi", resume_token="TOK")
     assert "TOK" in argv or "--continue" in argv  # opencode uses sentinel-only

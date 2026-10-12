@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from discode.tools.base import ToolAdapter
 from discode.tools.generic import GenericAdapter
 
@@ -200,13 +202,13 @@ def test_codex_parse_resume_token_absent() -> None:
 
 
 def test_opencode_exec_cmd_no_resume() -> None:
-    cmd = _opencode().exec_cmd("draft a todo", resume_token=None)
-    assert cmd == ["opencode", "run", "draft a todo"]
+    with pytest.raises(ValueError, match="sentinel resume is disabled"):
+        _opencode().exec_cmd("draft a todo", resume_token=None)
 
 
 def test_opencode_exec_cmd_with_resume() -> None:
-    cmd = _opencode().exec_cmd("more", resume_token="any-truthy")
-    assert cmd == ["opencode", "run", "--continue", "more"]
+    with pytest.raises(ValueError, match="sentinel resume is disabled"):
+        _opencode().exec_cmd("more", resume_token="any-truthy")
 
 
 def test_opencode_uses_pty() -> None:
@@ -216,3 +218,9 @@ def test_opencode_uses_pty() -> None:
 def test_opencode_parse_resume_token_returns_sentinel() -> None:
     # opencode doesn't expose a CLI session id; we just signal "session exists, use --continue"
     assert _opencode().parse_resume_token("anything", "anything") == "opencode"
+
+
+def test_flag_like_resume_token_rejected() -> None:
+    """Audit 2026-10-12: tool output must not inject flags via the resume token."""
+    assert _claude().parse_resume_token('{"session_id": "--dangerous"}', "") is None
+    assert _claude().parse_resume_token('{"session_id": "a b"}', "") is None

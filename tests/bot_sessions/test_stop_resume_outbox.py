@@ -21,7 +21,7 @@ class _FakeUpdateResult:
 
 
 def _fake_session(sess_row, captured):
-    async def _get(_model, _pk):
+    async def _get(_model, _pk, **_kwargs):
         return sess_row
 
     async def _execute(*_a, **_k):
@@ -64,7 +64,7 @@ async def test_stop_saga_writes_runner_stop_envelope(monkeypatch):
     captured: list[dict] = []
     sid = uuid.uuid4()
     sess_row = types.SimpleNamespace(
-        guild_id="g1", status="running", host_id="host-9", thread_id="t1"
+        lifecycle_version=1, guild_id="g1", status="running", host_id="host-9", thread_id="t1"
     )
     _patch_write_outbox(monkeypatch, captured)
 
@@ -88,7 +88,7 @@ async def test_resume_saga_writes_runner_resume_envelope(monkeypatch):
     captured: list[dict] = []
     sid = uuid.uuid4()
     sess_row = types.SimpleNamespace(
-        guild_id="g1", status="archived", host_id="host-3", thread_id="t-77"
+        lifecycle_version=1, guild_id="g1", status="archived", host_id="host-3", thread_id="t-77"
     )
     _patch_write_outbox(monkeypatch, captured)
 

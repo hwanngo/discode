@@ -68,3 +68,13 @@ def test_setup_admin_role_subgroup_registered():
     assert {"set", "list"} <= ar_sub_names, (
         f"setup admin-role is missing subcommands. Found: {ar_sub_names}"
     )
+
+
+def test_lifecycle_aliases_have_bound_callbacks_and_error_handler():
+    bot = DiscodeBot()
+    for name in ("archive", "resume", "restart", "invite"):
+        command = bot.tree.get_command(name)
+        assert command is not None
+        assert command.binding is not None
+        assert command.parent is None
+    assert bot.tree.on_error == bot.on_app_command_error

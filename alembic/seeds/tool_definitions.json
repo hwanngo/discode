@@ -58,7 +58,7 @@
     "model_flag": "--model",
     "api_key_env": null,
     "base_url_env": null,
-    "enabled": true
+    "enabled": false
   },
   {
     "name": "droid",

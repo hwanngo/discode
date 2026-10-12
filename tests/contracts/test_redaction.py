@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 
+import pytest
+
 from discode.security.redaction import (
     apply_common_redaction,
     build_redaction_patterns,
@@ -58,9 +60,7 @@ def test_apply_common_redaction_removes_api_key_pattern() -> None:
 # --- Project-specific bare secret formats ---
 
 # Realistic but FAKE secrets below (do not use real tokens).
-FAKE_DISCORD_TOKEN = (
-    "MTAxMjM0NTY3ODkwMTIzNDU2Nzg.GaBcDe.aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"
-)
+FAKE_DISCORD_TOKEN = "MTAxMjM0NTY3ODkwMTIzNDU2Nzg.GaBcDe.aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"
 FAKE_ANTHROPIC_KEY = "sk-ant-api03-AbCdEf1234567890GhIjKlMnOpQrStUvWxYz"
 FAKE_DB_URL = "postgresql+asyncpg://dbuser:dbpass123@db:5432/discode"
 
@@ -103,3 +103,64 @@ def test_apply_common_redaction_does_not_over_redact_benign_text() -> None:
     result = apply_common_redaction(benign)
     assert result == benign
     assert "[REDACTED]" not in result
+
+
+# --- Audit 2026-10-12 #6: deployment secrets and vendor token formats ---
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        # Fake values are assembled at runtime so secret scanners don't flag the fixtures.
+        ("DEPLOYMENT_SECRET_KEY=" + "Zm9vYmFy" * 5 + "MTI=", "Zm9vYmFy"),
+        ("RUNNER_CONTROL_AUTH=" + "abcd1234" * 2, "abcd1234"),
+        ('{"api_key": "zzzSECRETzzz123"}', "zzzSECRETzzz123"),
+        ("export OPENAI_API_KEY='sk-xyz'", "sk-xyz"),
+        ("token ghp_" + "a" * 36, "ghp_"),
+        ("github_pat_" + "B" * 30, "github_pat_"),
+        ("aws " + "AKIA" + "ABCDEFGHIJKLMNOP" + " here", "ABCDEFGHIJKLMNOP"),
+        ("key sk-proj-abc_DEF-ghi_jklmnopqrstuvwxyz", "jklmnop"),
+        ("AIza" + "C" * 35, "AIza"),
+        ("-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----", "MIIabc"),
+    ],
+)
+def test_apply_common_redaction_covers_audit_gaps(text: str, secret: str) -> None:
+    result = apply_common_redaction(text)
+    assert secret not in result
+    assert "[REDACTED]" in result
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "auth = request.headers.get('x')",
+        "the cache_key = compute(x)",
+        "primary_key=True",
+    ],
+)
+def test_apply_common_redaction_spares_ordinary_code(code: str) -> None:
+    assert apply_common_redaction(code) == code
+
+
+def test_apply_common_redaction_removes_deployment_secret_values(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import discode.config
+    import discode.security.redaction as redaction
+
+    settings = SimpleNamespace(
+        DISCORD_TOKEN="plain-discord-token-value",
+        RUNNER_CONTROL_AUTH="control-auth-value-123",
+        DEPLOYMENT_SECRET_KEY="fernet-key-one-xxxxxxxx,fernet-key-two-yyyyyyyy",
+        DATABASE_URL="postgresql://u:db-password-zzz@h/d",
+        REDIS_URL="redis://localhost:6379/0",
+    )
+    monkeypatch.setattr(discode.config, "get_settings", lambda: settings)
+    monkeypatch.setattr(redaction, "_deployment_secret_patterns", None)
+    text = (
+        "leaked plain-discord-token-value control-auth-value-123 "
+        "fernet-key-two-yyyyyyyy db-password-zzz"
+    )
+    result = apply_common_redaction(text)
+    for value in ("plain-discord", "control-auth", "fernet-key-two", "db-password"):
+        assert value not in result

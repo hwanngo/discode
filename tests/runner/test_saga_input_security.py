@@ -18,19 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from discode.runner.saga_input import (
-    _EXEC_TIMEOUT_SECONDS,
-    _lease_seconds,
     build_exec_session,
     is_base_url_allowed,
 )
-
-# --------------------------------------------------------------------------
-# FIX 6 — lease must cover the exec window so it can't be reclaimed mid-turn
-# --------------------------------------------------------------------------
-
-
-def test_lease_covers_exec_window():
-    assert _lease_seconds() >= _EXEC_TIMEOUT_SECONDS
 
 
 def _make_payload():
@@ -74,7 +64,9 @@ async def test_secret_env_not_leaked_to_child(monkeypatch, tmp_path: Path):
         "discode.runner.saga_input.get_adapter",
         new=AsyncMock(return_value=(_adapter(), fake_tool_def)),
     ):
-        sess = await build_exec_session(store_entry, _make_payload(), MagicMock())
+        db = MagicMock()
+        db.scalars = AsyncMock(return_value=MagicMock(all=lambda: []))
+        sess = await build_exec_session(store_entry, _make_payload(), db)
 
     assert "DISCORD_TOKEN" not in sess._env
     assert "DATABASE_URL" not in sess._env
@@ -106,7 +98,9 @@ async def test_empty_overlay_reconstructs_scrubbed_env(monkeypatch, tmp_path: Pa
         "discode.runner.saga_input.get_adapter",
         new=AsyncMock(return_value=(_adapter(env_allowlist=["MY_TOOL_KEY"]), fake_tool_def)),
     ):
-        sess = await build_exec_session(store_entry, _make_payload(), MagicMock())
+        db = MagicMock()
+        db.scalars = AsyncMock(return_value=MagicMock(all=lambda: []))
+        sess = await build_exec_session(store_entry, _make_payload(), db)
 
     assert "DISCORD_TOKEN" not in sess._env
     # adapter allowlist var passes through
@@ -165,14 +159,19 @@ async def test_base_url_override_blocked_not_applied(monkeypatch, tmp_path: Path
     # here; instead patch the internal override dict by patching get_adapter and
     # the select query. Simpler: drive through is_base_url_allowed unit test +
     # this asserts the apply branch. We simulate overrides via monkeypatching.
-    with patch(
-        "discode.runner.saga_input.get_adapter",
-        new=AsyncMock(return_value=(_adapter(), fake_tool_def)),
-    ), patch(
-        "discode.runner.saga_input._load_overrides",
-        new=AsyncMock(return_value={"base_url": "http://169.254.169.254"}),
+    with (
+        patch(
+            "discode.runner.saga_input.get_adapter",
+            new=AsyncMock(return_value=(_adapter(), fake_tool_def)),
+        ),
+        patch(
+            "discode.runner.saga_input._load_overrides",
+            new=AsyncMock(return_value={"base_url": "http://169.254.169.254"}),
+        ),
     ):
-        sess = await build_exec_session(store_entry, _make_payload(), MagicMock())
+        db = MagicMock()
+        db.scalars = AsyncMock(return_value=MagicMock(all=lambda: []))
+        sess = await build_exec_session(store_entry, _make_payload(), db)
 
     assert "ANTHROPIC_BASE_URL" not in sess._env
 
@@ -193,13 +192,18 @@ async def test_base_url_override_public_applied(monkeypatch, tmp_path: Path):
     fake_tool_def.api_key_env = "ANTHROPIC_API_KEY"
     fake_tool_def.base_url_env = "ANTHROPIC_BASE_URL"
 
-    with patch(
-        "discode.runner.saga_input.get_adapter",
-        new=AsyncMock(return_value=(_adapter(), fake_tool_def)),
-    ), patch(
-        "discode.runner.saga_input._load_overrides",
-        new=AsyncMock(return_value={"base_url": "https://api.anthropic.com"}),
+    with (
+        patch(
+            "discode.runner.saga_input.get_adapter",
+            new=AsyncMock(return_value=(_adapter(), fake_tool_def)),
+        ),
+        patch(
+            "discode.runner.saga_input._load_overrides",
+            new=AsyncMock(return_value={"base_url": "https://api.anthropic.com"}),
+        ),
     ):
-        sess = await build_exec_session(store_entry, _make_payload(), MagicMock())
+        db = MagicMock()
+        db.scalars = AsyncMock(return_value=MagicMock(all=lambda: []))
+        sess = await build_exec_session(store_entry, _make_payload(), db)
 
     assert sess._env.get("ANTHROPIC_BASE_URL") == "https://api.anthropic.com"

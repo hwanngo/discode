@@ -16,6 +16,10 @@ class _FakeResult:
     def fetchone(self):
         return self._row
 
+    def scalar_one(self):
+        assert self._row is not None
+        return self._row[0]
+
 
 class _FakeIdemDB:
     """In-memory fake of the idempotency_keys SQL the system_notice gate uses."""
@@ -224,3 +228,20 @@ async def test_run_dispatcher_uses_real_send_not_stub(monkeypatch: pytest.Monkey
     mock_client_cls.assert_called_once_with(token="Bot fake-token")
     # The real client's send_message must have been called (not a stub)
     assert send_calls == [("t1", "hello", "k1")]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_survives_ack_failure() -> None:
+    """Audit 2026-10-12: a Redis error while acking must not kill the consumer loop."""
+    from unittest.mock import AsyncMock
+
+    consumer = AsyncMock()
+    consumer.claim_pending = AsyncMock(
+        side_effect=[[("1-0", {}), ("2-0", {})], asyncio.CancelledError]
+    )
+    consumer.ack = AsyncMock(side_effect=[ConnectionError("redis down"), None])
+
+    with pytest.raises(asyncio.CancelledError):
+        await _consume_dispatcher_stream(consumer, AsyncMock(return_value=True))
+
+    assert consumer.ack.await_count == 2

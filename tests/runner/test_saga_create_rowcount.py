@@ -81,20 +81,24 @@ async def test_running_skipped_when_update_rowcount_zero():
     db_factory = MagicMock(side_effect=lambda: _factory())
 
     # revalidate_cwd must pass (return a realpath, no deny reason).
-    with patch(
-        "discode.runner.saga_create.revalidate_cwd",
-        new=AsyncMock(return_value=("/tmp/work", None)),
-    ), patch(
-        "discode.runner.saga_create.get_adapter",
-        new=AsyncMock(return_value=(MagicMock(env_allowlist=lambda: [], extra_paths=lambda: []),
-                                    MagicMock())),
-    ), patch(
-        "discode.runner.saga_create.write_outbox", new=AsyncMock()
-    ) as mock_outbox:
+    with (
+        patch(
+            "discode.runner.saga_create.revalidate_cwd",
+            new=AsyncMock(return_value=("/tmp/work", None)),
+        ),
+        patch(
+            "discode.runner.saga_create.get_adapter",
+            new=AsyncMock(
+                return_value=(
+                    MagicMock(env_allowlist=lambda: [], extra_paths=lambda: []),
+                    MagicMock(),
+                )
+            ),
+        ),
+        patch("discode.runner.saga_create.write_outbox", new=AsyncMock()) as mock_outbox,
+    ):
         store: dict = {}
-        await run_create_job(
-            payload, host_id="h1", db_factory=db_factory, session_store=store
-        )
+        await run_create_job(payload, host_id="h1", db_factory=db_factory, session_store=store)
 
     # No audit Event added, no outbox enqueue, store not populated.
     assert added == []

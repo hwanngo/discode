@@ -158,8 +158,7 @@ async def test_sweep_outbox_deletes_old_published_rows(db_factory_fixture):
         async with db.begin():
             await db.execute(
                 text(
-                    "UPDATE redis_outbox SET created_at = now() - interval '30 days'"
-                    " WHERE id = :id"
+                    "UPDATE redis_outbox SET created_at = now() - interval '30 days' WHERE id = :id"
                 ),
                 {"id": old_id},
             )
@@ -174,8 +173,8 @@ async def test_sweep_outbox_deletes_old_published_rows(db_factory_fixture):
 
 
 @pytest.mark.asyncio
-async def test_sweep_outbox_deletes_old_exhausted_rows(db_factory_fixture):
-    """sweep_outbox deletes attempt-exhausted (max_attempts) rows past the window."""
+async def test_sweep_outbox_preserves_old_exhausted_rows(db_factory_fixture):
+    """Failed publication stays available for operator recovery after retention."""
     producer = f"retention-{uuid.uuid4().hex[:8]}"
 
     async with db_factory_fixture() as db:
@@ -195,14 +194,42 @@ async def test_sweep_outbox_deletes_old_exhausted_rows(db_factory_fixture):
         async with db.begin():
             await db.execute(
                 text(
-                    "UPDATE redis_outbox SET created_at = now() - interval '30 days'"
-                    " WHERE id = :id"
+                    "UPDATE redis_outbox SET created_at = now() - interval '30 days' WHERE id = :id"
                 ),
                 {"id": exhausted_id},
             )
 
-    count = await sweep_outbox(db_factory_fixture, retention_days=7)
-    assert count >= 1
+    await sweep_outbox(db_factory_fixture, retention_days=7)
 
     async with db_factory_fixture() as db:
-        assert await db.get(RedisOutbox, exhausted_id) is None
+        assert await db.get(RedisOutbox, exhausted_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delivered_payload_expiry_preserves_replay_tombstone(db_factory_fixture):
+    from discode.db.models import InputTurn
+    from discode.janitor.retention import sweep_turn_results
+
+    guild, user, host = _unique_ids()
+    await _seed_prerequisites(db_factory_fixture, guild, user, host)
+    sid = await _insert_session(db_factory_fixture, guild, host, "running")
+    key = str(uuid.uuid4())
+    async with db_factory_fixture() as db, db.begin():
+        db.add(
+            InputTurn(
+                idempotency_key=key,
+                session_id=uuid.UUID(sid),
+                lifecycle_version=0,
+                status="delivered",
+                result_text="old result",
+                resume_token="old token",
+                updated_at=datetime.now(UTC) - timedelta(days=40),
+            )
+        )
+    assert await sweep_turn_results(db_factory_fixture) >= 1
+    async with db_factory_fixture() as db:
+        turn = await db.get(InputTurn, key)
+        assert turn is not None
+        assert turn.status == "delivered"
+        assert turn.result_text is None
+        assert turn.resume_token is None

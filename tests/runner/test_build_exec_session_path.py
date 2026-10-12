@@ -104,6 +104,7 @@ async def test_build_exec_session_path_includes_user_local_bin(
     fake_adapter.exec_cmd.return_value = ["claude", "--print", "hello"]
     fake_adapter.exec_uses_pty.return_value = False
     mock_session = MagicMock()
+    mock_session.scalars = AsyncMock(return_value=MagicMock(all=lambda: []))
 
     fake_tool_def = MagicMock()
     with patch(
@@ -141,6 +142,7 @@ async def test_build_exec_session_path_adapter_extras_come_first(
     fake_adapter.exec_cmd.return_value = ["opencode", "run", "--hello"]
     fake_adapter.exec_uses_pty.return_value = False
     mock_session = MagicMock()
+    mock_session.scalars = AsyncMock(return_value=MagicMock(all=lambda: []))
 
     fake_tool_def = MagicMock()
     with patch(

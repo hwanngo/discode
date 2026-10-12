@@ -53,7 +53,8 @@ All four share one Postgres database and one Redis instance.
 
 **Prerequisites:** Python ≥ 3.14, [uv](https://docs.astral.sh/uv/),
 [just](https://just.systems/), Docker, [overmind](https://github.com/DarthSim/overmind),
-and one or more tool CLIs (`claude`, `codex`, `opencode`, etc.) on `PATH`.
+and one or more supported tool CLIs (`claude`, `codex`, etc.) on `PATH`.
+OpenCode is seeded but disabled (migration `0004`): its latest-session continuation has no explicit session identity, so it cannot run until that is supported.
 
 ```bash
 # 1. Install dependencies
@@ -62,7 +63,8 @@ just install
 # 2. Start Postgres + Redis containers
 just infra
 
-# 3. Configure
+# 3. Configure (set at least DISCORD_TOKEN, DEPLOYMENT_SECRET_KEY,
+#    RUNNER_CONTROL_AUTH and ALLOWED_GUILD_IDS)
 cp .env.example .env
 $EDITOR .env
 
@@ -82,7 +84,6 @@ Stop with `Ctrl-C` inside the overmind session, or `overmind stop` from another 
 /setup admin-role set @YourAdminRole         # lock down further /setup commands
 /setup map set claude #coding-claude         # map each tool to a channel
 /setup map set codex  #coding-codex
-/setup map set opencode #coding-opencode
 /root add /home/user/projects myrepo         # allow a project root (optionally register alias)
 /tool list                                   # confirm seeded tools are visible
 ```
@@ -105,7 +106,7 @@ startup — `/setup sync` is only needed to force a re-sync after an unexpected 
 
 | Parameter | Meaning                                                                               |
 | --------- | ------------------------------------------------------------------------------------- |
-| `tool`    | Any tool registered in the guild (`claude`, `codex`, `opencode`, `droid`, …)          |
+| `tool`    | Any tool registered in the guild (`claude`, `codex`, `droid`, …)          |
 | `name`    | Human-readable label (also used for archive resume by name)                           |
 | `cwd`     | Absolute path **or** a registered alias name (see `/root alias set` to register one)  |
 
@@ -135,7 +136,7 @@ message-content routing (default: off).
 
 | Command                                | Gate              | Description                                                  |
 | -------------------------------------- | ----------------- | ------------------------------------------------------------ |
-| `/start <tool> <name> <cwd>`           | open              | Start a session in the given cwd (path or alias)            |
+| `/start <tool> <name> <cwd>`           | admin             | Start a session in the given cwd (path or alias)            |
 | `/help`                                | open              | List all available Discode commands                          |
 | `/diff [session]`                      | open              | Show a git diff preview for a session                        |
 | `/invite <user> [session]`             | owner or admin    | Invite a user as session member                              |
@@ -170,7 +171,7 @@ message-content routing (default: off).
 
 | Command                                | Gate                  | Description                                                 |
 | -------------------------------------- | --------------------- | ----------------------------------------------------------- |
-| `/root add <path> [alias]`             | open / admin if alias | Allow a project directory; optionally register a guild alias (credential/system paths are denied — see Security model) |
+| `/root add <path> [alias]`             | admin             | Allow a project directory; optionally register a guild alias (credential/system paths are denied — see Security model) |
 | `/root alias set <alias> <path>`       | admin                 | Register or replace a guild alias                           |
 | `/root alias list`                     | open                  | List all guild aliases                                      |
 | `/root alias remove <alias>`           | admin                 | Remove an alias                                             |
@@ -185,14 +186,15 @@ All configuration is via environment variables (loaded from `.env`). Required:
 | `DATABASE_URL`           | `postgresql+asyncpg://...`                                         |
 | `REDIS_URL`              | `redis://...`                                                      |
 | `DEPLOYMENT_SECRET_KEY`  | Fernet key (or comma-separated list for rotation); used to encrypt per-session `api_key` overrides |
-| `SESSION_ISOLATION_MODE` | `uid_pool` / `user_namespace` / `platform_equivalent`              |
+| `SESSION_ISOLATION_MODE` | `trusted_host` (only implemented mode)              |
+| `ALLOWED_GUILD_IDS`      | Comma-separated guild IDs the bot serves. Empty refuses every guild; the bot leaves unlisted guilds it is invited to |
 
 Useful optional knobs:
 
 | Variable                        | Default          | Purpose                                                   |
 | ------------------------------- | ---------------- | --------------------------------------------------------- |
 | `RUNNER_CONTROL_BIND`           | `127.0.0.1:8788` | Address the runner's control API listens on              |
-| `RUNNER_CONTROL_AUTH`           | _(empty)_        | Required bearer token when bind is non-loopback           |
+| `RUNNER_CONTROL_AUTH`           | _(empty)_        | Required bearer token, including loopback           |
 | `ENABLE_MESSAGE_CONTENT_INPUT`  | `false`          | Toggle Discord message-content routing                    |
 | `EMERGENCY_STOP`                | `0`              | Set to `1` to halt outbound side-effects                  |
 
@@ -223,7 +225,10 @@ subprocess. If a tool needs a credential, add its env var to that tool's `env_pa
 Guild admins can also set a per-session API key override via `/session config set api_key …`;
 the value is encrypted at rest with the deployment Fernet key.
 
-Run `uv run python scripts/diag.py` to verify each binary is reachable and its auth works.
+Run `uv run python scripts/diag.py` for local settings, binary-discovery, and
+subprocess checks. It does not verify provider authentication; `--live` tries
+one Claude turn and may use paid credits. Use `just tool-probe <name> --live`
+for a two-turn compatibility check of a particular registered tool.
 
 ## Security model
 
@@ -233,11 +238,13 @@ the **runner host as the trust boundary** and keep these properties in mind when
 - **The agent runs with host privileges.** The seeded `claude` tool runs with
   `--permission-mode bypassPermissions`, i.e. the agent executes file writes and shell commands
   without prompting. Anyone who can send input to a session can run code as the runner OS user
-  within the session's `cwd`. Run the runner as a dedicated, least-privileged user (ideally an
-  ephemeral/sandboxed one via `SESSION_ISOLATION_MODE`); do not run it as a user that holds
-  unrelated production credentials.
-- **Subprocess environment is scrubbed** to an allowlist (see *Tool authentication*), so runner
-  secrets are not exposed to agents.
+  with access beyond the starting `cwd`. The bot only serves guilds in `ALLOWED_GUILD_IDS`, and
+  only platform admins or the guild's Discode admin role can `/start` sessions or `/root add`
+  workspaces; anyone they `/invite` can still drive the session. Only `SESSION_ISOLATION_MODE=trusted_host` is
+  implemented. Use a dedicated disposable host and fully trusted operators. The application
+  does not implement a filesystem/network/UID sandbox. Never share it with untrusted tenants.
+- **Subprocess environment is scrubbed** to an allowlist (see *Tool authentication*), and infrastructure credential variables are explicitly denied. This does not prevent
+  an agent reading files accessible to the runner OS user.
 - **Working directories are constrained.** `/root add` and alias resolution canonicalize paths
   (resolving symlinks and `..`) and deny credential/system locations — `.ssh`, `.aws`, `.gnupg`,
   `.docker`, `.kube`, `.gcloud`, `.azure`, `.npm`, `.local`, `.config`, `/etc`, `/proc`, `/sys`,
@@ -248,8 +255,13 @@ the **runner host as the trust boundary** and keep these properties in mind when
   URLs with embedded credentials). Don't rely on this as a primary control — keep secrets out of
   tool output.
 - **Admin commands fail closed** until a guild admin role is configured (see *Bot setup*).
-- **Control API is loopback-only** (`127.0.0.1:8788`). Set `RUNNER_CONTROL_AUTH` to require a
-  bearer token; on a shared/multi-tenant host, set it even on loopback.
+- **Control API is loopback/private-only** (`127.0.0.1:8788`) and always requires the
+  `RUNNER_CONTROL_AUTH` bearer token; the runner refuses to start without it.
+- **Redis jobs are not authenticated against the agent.** Agents run as the runner's OS user and
+  can read `.env`, so a Redis password or envelope signing would not stop a session's agent from
+  injecting jobs for another session. Real isolation needs agents under a separate OS user
+  (`SESSION_ISOLATION_MODE=uid_pool`, not yet implemented); until then treat every operator and
+  invited member as able to act on every session on the host.
 - **Infrastructure auth is your responsibility in production.** The bundled `docker-compose.yml`
   is local-dev only: it binds Postgres/Redis to `127.0.0.1` and uses default/no credentials. For
   any non-laptop deployment, set real Postgres credentials and a Redis password (`requirepass`),
@@ -277,4 +289,19 @@ something replies-but-not-quite-right and you want to bisect between "tool probl
 
 ## License
 
-See [LICENSE](LICENSE) (or add one before publishing).
+No license has been selected or supplied. Publication/distribution remains blocked until
+the repository owner chooses a license and adds its text; this change grants no license.
+
+## Operational contracts
+
+Global `/tool` mutations require the actor in `PLATFORM_ADMIN_USER_IDS` (comma-separated
+Discord user IDs). Guild admin permissions alone do not grant executable administration.
+Settings are validated centrally from environment and `.env`; restart all processes after
+configuration changes. `RUNNER_HOST_ID` is the shared host-routing identifier.
+
+Metrics are exposed at `/metrics` on the four loopback `*_METRICS_BIND` addresses.
+See [operations](docs/operations/incident-playbook.md) for exhausted-outbox recovery.
+Before release run `just check`, `uv build`, `just audit`, and the Docker-backed integration
+suite. CI runs these checks with disposable Testcontainers services. No live Discord or
+provider test is implied. `scripts/diag.py --live` explicitly opts into database/provider
+access and possible spend; ordinary diagnostics are offline.

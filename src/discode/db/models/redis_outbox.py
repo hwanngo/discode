@@ -12,6 +12,11 @@ class RedisOutbox(Base):
     __tablename__ = "redis_outbox"
     __table_args__ = (
         sa.Index(
+            "outbox_retention_idx",
+            "created_at",
+            postgresql_where=sa.text("published_at IS NOT NULL"),
+        ),
+        sa.Index(
             "redis_outbox_pending_idx",
             "producer",
             "published_at",

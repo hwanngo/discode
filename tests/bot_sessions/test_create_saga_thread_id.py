@@ -7,6 +7,7 @@ We stub the DB layer and capture the payload passed to write_outbox.
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
@@ -23,6 +24,12 @@ class _FakeResult:
 
 
 class _FakeSession:
+    async def get(self, *_a, **_k):
+        return SimpleNamespace(enabled=True, resume_token_source="caller_uuid")
+
+    async def scalar(self, *_a, **_k):
+        return 0
+
     async def execute(self, *_a, **_k):
         return _FakeResult()
 

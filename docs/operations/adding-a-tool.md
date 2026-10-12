@@ -7,8 +7,9 @@ per-tool Python.
 
 A tool can be added two ways:
 
-- **Seeded** — add an entry to `alembic/seeds/tool_definitions.json`. Applies to
-  fresh installs.
+- **Seeded** — the initial seeds are frozen inside `alembic/versions/0001_initial.py`;
+  ship a new tool (or a correction) as a data migration like `0004_tool_seed_fixes.py`.
+  Keep `alembic/seeds/tool_definitions.json` in sync — `just tool-probe` reads it.
 - **At runtime** — `/tool register` in Discord (admin-gated, `bot/tool_service.py`).
 
 Either way, **probe it before enabling it**:
@@ -64,10 +65,9 @@ and discode scrapes it after turn one. Works, but couples you to the tool's
 output format; codex's `"session id:\s*([0-9a-zA-Z-]+)"` breaks if that line is
 ever reworded.
 
-**`sentinel`** — a bare "continue last session" flag with no id
-(opencode's `--continue`). Accepted, but **the tool resolves "last session"
-itself, usually per working directory**. Two Discord threads on the same repo
-can interleave into one conversation. Prefer any of the above.
+**`sentinel`** — rejected at registration/execution because latest-session continuation
+cannot guarantee isolation, including sequential reuse of a workspace. OpenCode
+continuation is unavailable until its definition supplies an explicit session identity.
 
 **`none`** — no continuity. Every message starts a fresh session. Only correct
 for genuinely stateless tools.
@@ -103,8 +103,9 @@ raw stdout, dumping the whole stream into Discord. Check with
 ## What the probe checks
 
 Static (free): the definition validates; the binary resolves on the runner's
-`PATH`; turn-1 and turn-2 argv are printed for eyeballing; the resume mechanism
-is classified; the prompt has an end-of-options guard; `HOME` survives the env
+`PATH`; turn-1 and turn-2 argv are constructed without printing their values;
+the resume mechanism is classified; leading-dash prompts are rejected unless an
+end-of-options guard is present; `HOME` survives the env
 allowlist.
 
 Live (`--live`): both turns spawn through the production `ExecSession`; the
@@ -113,10 +114,13 @@ and — the real test — a code word given in turn one is recalled in turn two.
 
 ## Known systemic warnings
 
-Every current definition trips the flag-injection warning: the prompt is the
-last argv element with no `--` before it, so a message consisting of a single
-`-`-prefixed token is parsed by the tool as a flag rather than as text. Harmless
-against the seeded `claude` entry (which already runs with permissions
-bypassed), but it means a member could disable a safety flag on a
-hardened definition. Fixing it needs a `--` in `exec_cmd`, gated on tools whose
-parsers honour it.
+Definitions whose CLI does not accept an end-of-options separator reject prompts
+beginning with `-`. The static probe exercises the production adapter's guard.
+It cannot prove a provider accepts its configured resume syntax; run the live
+two-turn check in a disposable workspace before enabling a tool.
+
+Executable definitions are global and require `PLATFORM_ADMIN_USER_IDS` authorization.
+All fields are validated together before persistence. To accept prompts beginning with `-`,
+place a literal `--` argument before `{prompt}` when the CLI supports end-of-options; otherwise
+these prompts are rejected to prevent option injection. Never add infrastructure secrets to
+`env_passthrough`.

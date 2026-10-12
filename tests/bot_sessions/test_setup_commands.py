@@ -126,6 +126,7 @@ async def test_setup_map_upserts_mapping(db_factory_fixture):
     """setup_map_set upserts a tool->channel mapping and returns it."""
     guild_id = _guild_id()
     await _seed_guild(db_factory_fixture, guild_id)
+    await _seed_policy(db_factory_fixture, guild_id, role_id="admin")
 
     async with db_factory_fixture() as session:
         result = await setup_map_set(
@@ -134,6 +135,7 @@ async def test_setup_map_upserts_mapping(db_factory_fixture):
             tool="claude",
             channel_id="chan-999",
             updated_by="user-1",
+            member_roles=["admin"],
         )
         await session.commit()
 
@@ -147,13 +149,16 @@ async def test_setup_map_upsert_updates_existing(db_factory_fixture):
     """Calling setup_map_set twice updates the channel (upsert behaviour)."""
     guild_id = _guild_id()
     await _seed_guild(db_factory_fixture, guild_id)
+    await _seed_policy(db_factory_fixture, guild_id, role_id="admin")
 
     async with db_factory_fixture() as session:
-        await setup_map_set(session, guild_id, "claude", "chan-1", "user-1")
+        await setup_map_set(session, guild_id, "claude", "chan-1", "user-1", member_roles=["admin"])
         await session.commit()
 
     async with db_factory_fixture() as session:
-        result = await setup_map_set(session, guild_id, "claude", "chan-2", "user-2")
+        result = await setup_map_set(
+            session, guild_id, "claude", "chan-2", "user-2", member_roles=["admin"]
+        )
         await session.commit()
 
     assert result.channel_id == "chan-2"
@@ -164,10 +169,11 @@ async def test_setup_map_list_returns_all(db_factory_fixture):
     """setup_map_list returns all mappings for the guild."""
     guild_id = _guild_id()
     await _seed_guild(db_factory_fixture, guild_id)
+    await _seed_policy(db_factory_fixture, guild_id, role_id="admin")
 
     async with db_factory_fixture() as session:
-        await setup_map_set(session, guild_id, "claude", "chan-1", "user-1")
-        await setup_map_set(session, guild_id, "codex", "chan-2", "user-1")
+        await setup_map_set(session, guild_id, "claude", "chan-1", "user-1", member_roles=["admin"])
+        await setup_map_set(session, guild_id, "codex", "chan-2", "user-1", member_roles=["admin"])
         await session.commit()
 
     async with db_factory_fixture() as session:
@@ -184,13 +190,18 @@ async def test_setup_map_remove_deletes_mapping(db_factory_fixture):
     """setup_map_remove removes an existing mapping and confirms deletion."""
     guild_id = _guild_id()
     await _seed_guild(db_factory_fixture, guild_id)
+    await _seed_policy(db_factory_fixture, guild_id, role_id="admin")
 
     async with db_factory_fixture() as session:
-        await setup_map_set(session, guild_id, "opencode", "chan-3", "user-1")
+        await setup_map_set(
+            session, guild_id, "opencode", "chan-3", "user-1", member_roles=["admin"]
+        )
         await session.commit()
 
     async with db_factory_fixture() as session:
-        result = await setup_map_remove(session, guild_id=guild_id, tool="opencode")
+        result = await setup_map_remove(
+            session, guild_id=guild_id, tool="opencode", member_roles=["admin"]
+        )
         await session.commit()
 
     assert isinstance(result, MapRemoveResult)
@@ -228,6 +239,7 @@ async def test_setup_admin_role_set(db_factory_fixture):
             role_id="role-777",
             role_name=None,
             updated_by="user-1",
+            already_authorized=True,
         )
         await session.commit()
 

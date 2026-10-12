@@ -33,6 +33,11 @@ def _make_db_factory(migrated_db_url: str):
     return engine, factory
 
 
+@pytest.fixture(autouse=True)
+def _allow_all_guilds(monkeypatch):
+    monkeypatch.setattr("discode.bot.policies.admin_auth.is_guild_allowed", lambda guild_id: True)
+
+
 @pytest_asyncio.fixture
 async def db_factory_fixture(migrated_db_url):
     engine = make_engine(migrated_db_url)
@@ -315,6 +320,7 @@ async def test_non_member_message_rejected():
     msg = _make_message(channel_type="thread", channel_id=777_002, guild_id=888_002)
 
     mock_row = MagicMock()
+    mock_row.status = "running"
     mock_row.id = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
     mock_row.host_id = "host-abc"
     mock_row.guild_id = "guild-888002"
@@ -360,6 +366,7 @@ async def test_member_message_in_session_thread_enqueues_input():
     )
 
     mock_row = MagicMock()
+    mock_row.status = "running"
     mock_row.id = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
     mock_row.host_id = "host-xyz"
     mock_row.guild_id = "guild-888003"
@@ -395,3 +402,21 @@ async def test_member_message_in_session_thread_enqueues_input():
     assert call_kwargs["text_content"] == "run the tests"
     assert call_kwargs["session_id"] == str(mock_row.id)
     msg.reply.assert_not_called()  # no error reply on success
+    await bot._typing_tracker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unallowed_guild_message_dropped(monkeypatch):
+    """Thread messages from guilds outside ALLOWED_GUILD_IDS never reach session lookup."""
+    from discode.bot.main import DiscodeBot
+
+    monkeypatch.setattr("discode.bot.policies.admin_auth.is_guild_allowed", lambda guild_id: False)
+    bot = object.__new__(DiscodeBot)
+    msg = _make_message(channel_type="thread", channel_id=777_009, guild_id=888_009)
+    lookup = AsyncMock()
+
+    with patch("discode.bot.session_service.resolve_session_for_thread", new=lookup):
+        await DiscodeBot.on_message(bot, msg)
+
+    lookup.assert_not_awaited()
+    msg.reply.assert_not_called()

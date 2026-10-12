@@ -4,8 +4,18 @@ import os
 
 
 def get_quota(name: str, default: int) -> int:
-    """Load a quota value from environment variable. Used for per-session/per-minute caps."""
-    return int(os.environ.get(name, str(default)))
+    """Load a per-session/per-minute cap: process env, then ``.env`` via Settings, then default.
+
+    Reading only ``os.environ`` silently ignored values set in ``.env``.
+    """
+    if name in os.environ:
+        return int(os.environ[name])
+    try:
+        from discode.config import get_settings
+
+        return int(getattr(get_settings(), name))
+    except Exception:
+        return default
 
 
 def MAX_OUTPUT_BYTES_PER_SESSION_PER_MIN() -> int:  # noqa: N802

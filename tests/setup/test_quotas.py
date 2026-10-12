@@ -38,3 +38,15 @@ def test_max_input_messages_per_session_per_min_default(monkeypatch: pytest.Monk
 def test_max_input_bytes_per_session_per_min_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MAX_INPUT_BYTES_PER_SESSION_PER_MIN", raising=False)
     assert MAX_INPUT_BYTES_PER_SESSION_PER_MIN() == 163840
+
+
+def test_quota_reads_dotenv_settings_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audit 2026-10-12: values configured in .env (via Settings) must apply."""
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("MAX_INPUT_BYTES_PER_MESSAGE", raising=False)
+    monkeypatch.setattr(
+        "discode.config.get_settings",
+        lambda: SimpleNamespace(MAX_INPUT_BYTES_PER_MESSAGE=1234),
+    )
+    assert MAX_INPUT_BYTES_PER_MESSAGE() == 1234

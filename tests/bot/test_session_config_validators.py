@@ -65,3 +65,9 @@ def test_validate_api_key_rejects_empty():
 
 def test_validate_api_key_rejects_too_long():
     assert _validate_api_key("x" * 1025) is not None
+
+
+def test_validate_model_rejects_flag_like_values():
+    """Audit 2026-10-12: a model value must not be parsed as another CLI flag."""
+    assert _validate_model("--dangerously-skip-permissions") is not None
+    assert _validate_model("gpt-4 --x") is not None

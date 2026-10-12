@@ -173,8 +173,8 @@ async def test_stop_session_marks_stopped(db_factory, live_session):
     async with db_factory() as db:
         row = await db.get(SessionModel, live_session.id)
     assert row is not None
-    assert row.status == "stopped"
-    assert row.stopped_at is not None
+    assert row.status == "stopping"
+    assert row.lifecycle_version == 1
 
 
 @pytest.mark.asyncio
@@ -250,7 +250,7 @@ async def test_resume_session_archived_to_running(db_factory, live_session):
     async with db_factory() as db:
         row = await db.get(SessionModel, live_session.id)
     assert row is not None
-    assert row.status == "running"
+    assert row.status == "resuming"
     assert row.archived_at is None
 
 
@@ -292,7 +292,7 @@ async def test_restart_session_clears_resume_token(db_factory, live_session):
         row = await db.get(SessionModel, live_session.id)
     assert row is not None
     assert row.tool_resume_token is None
-    assert row.status == "running"
+    assert row.status == "resuming"
 
 
 @pytest.mark.asyncio
@@ -381,3 +381,53 @@ async def test_invite_user_unknown_session_returns_false(db_factory):
         invitee_username="x",
     )
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_restart_publishes_fenced_command_in_state_transaction(db_factory, live_session):
+    from sqlalchemy import select
+
+    from discode.db.models import RedisOutbox
+
+    await restart_session(
+        db_factory,
+        session_id=str(live_session.id),
+        guild_id=live_session.guild_id,
+        requested_by_id=live_session.owner_id,
+        deployment_secret_key="unused",
+    )
+    async with db_factory() as db:
+        row = await db.get(SessionModel, live_session.id)
+        outbox = (
+            await db.scalars(
+                select(RedisOutbox).where(RedisOutbox.envelope_type == "runner.restart_session.v1")
+            )
+        ).all()
+    command = next(item for item in outbox if item.payload["session_id"] == str(row.id))
+    assert row.status == "resuming"
+    assert row.lifecycle_version == command.payload["lifecycle_version"] == 1
+    assert row.lifecycle_changed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_archive_publishes_cache_eviction_and_thread_archive(db_factory, live_session):
+    from sqlalchemy import select
+
+    from discode.db.models import RedisOutbox
+
+    async with db_factory() as db:
+        row = await db.get(SessionModel, live_session.id)
+        row.thread_id = "archive-thread-" + uuid.uuid4().hex
+        await db.commit()
+    await archive_session(
+        db_factory, session_id=str(live_session.id), guild_id=live_session.guild_id
+    )
+    async with db_factory() as db:
+        row = await db.get(SessionModel, live_session.id)
+        jobs = (await db.scalars(select(RedisOutbox))).all()
+    jobs = [job for job in jobs if job.payload.get("session_id") == str(row.id)]
+    assert {job.envelope_type for job in jobs} == {
+        "runner.stop_session.v1",
+        "discord.archive_thread.v1",
+    }
+    assert row.status == "archived" and row.lifecycle_version == 1

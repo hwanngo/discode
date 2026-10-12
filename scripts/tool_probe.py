@@ -34,7 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from discode.security.env_scrub import scrub_env  # noqa: E402
 from discode.tools.errors import BadToolDefinition  # noqa: E402
 from discode.tools.exec_session import ExecFailed, ExecSession, ExecTimeout  # noqa: E402
-from discode.tools.generic import _ANSI_RE, GenericAdapter  # noqa: E402
+from discode.tools.generic import GenericAdapter  # noqa: E402
+from discode.tools.text import strip_ansi  # noqa: E402
 
 SEEDS = Path(__file__).resolve().parent.parent / "alembic" / "seeds" / "tool_definitions.json"
 
@@ -84,10 +85,13 @@ def static_checks(definition: Any) -> GenericAdapter | None:
     token = adapter.mint_initial_token()
     source = definition.resume_token_source
 
-    first = adapter.exec_cmd("PROMPT", resume_token=token)
-    later = adapter.exec_cmd("PROMPT", resume_token=token or "TOKEN")
-    print(f"      turn 1 argv: {first}")
-    print(f"      turn 2 argv: {later}")
+    try:
+        first = adapter.exec_cmd("PROMPT", resume_token=token)
+        later = adapter.exec_cmd("PROMPT", resume_token=token or "TOKEN")
+    except ValueError as exc:
+        check(FAIL, "execution contract", str(exc))
+        return None
+    check(PASS, "turn argv constructed", f"first={len(first)} args; resume={len(later)} args")
 
     # Multi-turn continuity: does turn 2 differ from a cold start in a way that
     # names the earlier conversation?
@@ -98,25 +102,19 @@ def static_checks(definition: Any) -> GenericAdapter | None:
             check(PASS, "multi-turn continuity", "caller-assigned id present from turn 1")
         else:
             check(FAIL, "multi-turn continuity", "caller_uuid minted no token into turn-1 argv")
-    elif source == "sentinel":
-        check(
-            WARN,
-            "multi-turn continuity",
-            "sentinel resume is cwd-scoped - two threads sharing a cwd can interleave",
-        )
     else:
         check(PASS, "multi-turn continuity", f"token scraped via {source}")
 
-    # The prompt lands as a bare argv element. Without an end-of-options
-    # separator a prompt beginning with '-' is parsed as a flag by the tool.
-    if "--" not in definition.argv_prefix and "--" not in definition.argv_resume_tokens:
-        check(
-            WARN,
-            "prompt flag-injection guard",
-            "no '--' before {prompt}; a prompt starting with '-' is read as a flag",
-        )
+    # Ask the production adapter about the actual prompt boundary.
+    try:
+        guarded = adapter.exec_cmd("-PROMPT", resume_token=token)
+    except ValueError:
+        check(PASS, "prompt flag-injection guard", "unsafe leading-dash input is rejected")
     else:
-        check(PASS, "prompt flag-injection guard")
+        if "--" in guarded[: guarded.index("-PROMPT")]:
+            check(PASS, "prompt flag-injection guard", "end-of-options marker precedes prompt")
+        else:
+            check(FAIL, "prompt flag-injection guard", "leading-dash input reaches CLI flags")
 
     scrubbed = scrub_env(os.environ.copy(), extra_allowed=frozenset(adapter.env_allowlist()))
     if "HOME" in scrubbed:
@@ -145,18 +143,18 @@ async def live_checks(adapter: GenericAdapter, definition: Any, timeout: float) 
 
         try:
             first = await turn(f"Remember this code word: {nonce}. Reply with just: OK", token)
-        except (ExecFailed, ExecTimeout) as exc:
-            check(FAIL, "turn 1 runs", str(exc)[:220])
+        except (ExecFailed, ExecTimeout, OSError, ValueError) as exc:
+            check(FAIL, "turn 1 runs", type(exc).__name__)
             return
         check(PASS, "turn 1 runs", f"exit={first.exit_code}")
 
         reply = adapter.extract_reply(first.text, first.stderr)
         if reply.strip():
-            check(PASS, "reply extracts non-empty", f"{reply.strip()[:60]!r}")
+            check(PASS, "reply extracts non-empty", f"{len(reply)} characters")
         else:
             check(FAIL, "reply extracts non-empty", "extractor produced empty text")
 
-        if _ANSI_RE.search(reply):
+        if strip_ansi(reply) != reply:
             check(FAIL, "reply is ANSI-free", "escape sequences would reach Discord verbatim")
         else:
             check(PASS, "reply is ANSI-free")
@@ -167,16 +165,18 @@ async def live_checks(adapter: GenericAdapter, definition: Any, timeout: float) 
             if scraped is None:
                 check(PASS, "minted token survives turn 1", "parse_resume_token left it alone")
             else:
-                check(FAIL, "minted token survives turn 1", f"clobbered by {scraped!r}")
+                check(FAIL, "minted token survives turn 1", "token changed unexpectedly")
         elif next_token:
-            check(PASS, "resume token obtained", f"{str(next_token)[:40]!r}")
+            check(PASS, "resume token obtained")
         else:
             check(FAIL, "resume token obtained", "no token for turn 2 - continuity impossible")
 
         try:
-            second = await turn("What code word did I ask you to remember? Reply with just it.", next_token)
-        except (ExecFailed, ExecTimeout) as exc:
-            check(FAIL, "turn 2 runs", str(exc)[:220])
+            second = await turn(
+                "What code word did I ask you to remember? Reply with just it.", next_token
+            )
+        except (ExecFailed, ExecTimeout, OSError, ValueError) as exc:
+            check(FAIL, "turn 2 runs", type(exc).__name__)
             return
         check(PASS, "turn 2 runs", f"exit={second.exit_code}")
 
@@ -187,7 +187,7 @@ async def live_checks(adapter: GenericAdapter, definition: Any, timeout: float) 
             check(
                 FAIL,
                 "two turns share one session",
-                f"{nonce} not in reply {recalled.strip()[:80]!r} - resume is not working",
+                "code word absent from reply",
             )
 
 
@@ -206,18 +206,23 @@ def main() -> int:
 
     adapter = static_checks(definition)
 
-    if adapter is None:
-        pass
-    elif args.live:
+    if args.live and adapter is not None and not any(r[0] == FAIL for r in _results):
         asyncio.run(live_checks(adapter, definition, args.timeout))
+    elif args.live:
+        print("\nLive checks skipped because static checks failed")
+        check(SKIP, "two-turn continuity unverified")
+    elif adapter is None:
+        check(SKIP, "two-turn continuity unverified")
     else:
         print("\nLive checks skipped - pass --live to run two real turns (spends credits)")
         check(SKIP, "two-turn continuity unverified")
 
     failures = [r for r in _results if r[0] == FAIL]
     warnings = [r for r in _results if r[0] == WARN]
+    passed = sum(r[0] == PASS for r in _results)
+    skipped = sum(r[0] == SKIP for r in _results)
     print(
-        f"\n{len(_results) - len(failures) - len(warnings)} passed, "
+        f"\n{passed} passed, {skipped} skipped, "
         f"{len(warnings)} warning(s), {len(failures)} failure(s)"
     )
     if failures:

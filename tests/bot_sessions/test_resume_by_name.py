@@ -140,7 +140,7 @@ async def test_resume_by_name_marks_old_session_superseded(db_factory_fixture):
         resume_token="tok-123",
     )
 
-    await run_create_saga(
+    result = await run_create_saga(
         db_factory_fixture,
         **_make_saga_kwargs(guild_id, user_id, host_id, name="my-session"),
     )
@@ -151,7 +151,38 @@ async def test_resume_by_name_marks_old_session_superseded(db_factory_fixture):
             {"sid": archived_id},
         )
         status_reason = row.scalar_one()
-    assert status_reason == "superseded"
+    assert status_reason == f"superseded:{result.session_id}"
+
+
+@pytest.mark.asyncio
+async def test_failed_successor_releases_superseded_session(db_factory_fixture):
+    """Audit 2026-10-12: if the resumed session fails to start, the old one stays resumable."""
+    from discode.janitor.timeouts import sweep_creating_watchdog
+
+    guild_id, user_id, host_id = _unique_ids()
+    await _seed_prerequisites(db_factory_fixture, guild_id, user_id, host_id)
+    archived_id = await _seed_archived_session(
+        db_factory_fixture, guild_id, user_id, host_id, name="my-session", resume_token="tok-1"
+    )
+    result = await run_create_saga(
+        db_factory_fixture,
+        **_make_saga_kwargs(guild_id, user_id, host_id, name="my-session"),
+    )
+    async with db_factory_fixture() as db, db.begin():
+        await db.execute(
+            text("UPDATE sessions SET created_at = now() - interval '1 day' WHERE id=:sid"),
+            {"sid": result.session_id},
+        )
+
+    assert await sweep_creating_watchdog(db_factory_fixture) >= 1
+
+    async with db_factory_fixture() as db:
+        reason = (
+            await db.execute(
+                text("SELECT status_reason FROM sessions WHERE id=:sid"), {"sid": archived_id}
+            )
+        ).scalar_one()
+    assert reason is None
 
 
 @pytest.mark.asyncio

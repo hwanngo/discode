@@ -13,6 +13,8 @@ async def get_sessions_for_user(
     guild_id: str,
     user_id: str,
     include_all: bool = False,
+    page: int = 1,
+    page_size: int = 10,
 ) -> list[dict[str, object]]:
     """
     List sessions for a user.
@@ -21,6 +23,8 @@ async def get_sessions_for_user(
 
     Returns list of dicts with keys: session_id, name, tool, status, cwd, created_at, owner_id.
     """
+    page = max(1, page)
+    page_size = min(25, max(1, page_size))
     async with db_factory() as db:
         if include_all:
             result = await db.execute(
@@ -28,11 +32,10 @@ async def get_sessions_for_user(
                     SELECT s.id, s.name, s.tool, s.status, s.cwd, s.created_at, s.owner_id
                     FROM sessions s
                     WHERE s.guild_id = :gid
-                      AND s.status NOT IN ('stopped', 'failed')
                     ORDER BY s.created_at DESC
-                    LIMIT 50
+                    LIMIT :limit OFFSET :offset
                 """),
-                {"gid": guild_id},
+                {"gid": guild_id, "limit": page_size, "offset": (page - 1) * page_size},
             )
         else:
             result = await db.execute(
@@ -42,11 +45,15 @@ async def get_sessions_for_user(
                     JOIN session_members sm ON sm.session_id = s.id
                     WHERE s.guild_id = :gid
                       AND sm.user_id = :uid
-                      AND s.status NOT IN ('stopped', 'failed')
                     ORDER BY s.created_at DESC
-                    LIMIT 25
+                    LIMIT :limit OFFSET :offset
                 """),
-                {"gid": guild_id, "uid": user_id},
+                {
+                    "gid": guild_id,
+                    "uid": user_id,
+                    "limit": page_size,
+                    "offset": (page - 1) * page_size,
+                },
             )
         rows = result.fetchall()
         return [

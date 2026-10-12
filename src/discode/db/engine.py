@@ -3,9 +3,22 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
-def make_engine(database_url: str):  # type: ignore[no-untyped-def]
-    """Create async SQLAlchemy engine with pool_pre_ping=True."""
-    return create_async_engine(database_url, pool_pre_ping=True)
+def make_engine(  # type: ignore[no-untyped-def]
+    database_url: str, *, pool_size: int = 20, max_overflow: int = 10
+):
+    """Create async SQLAlchemy engine with pool_pre_ping=True.
+
+    The runner holds one connection per in-flight turn (advisory lock) plus a
+    periodic revocation check, so the pool must exceed 2x input concurrency
+    with headroom for the relay, heartbeat and control API.
+    """
+    return create_async_engine(
+        database_url,
+        pool_pre_ping=True,
+        hide_parameters=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+    )
 
 
 def make_session_factory(engine) -> async_sessionmaker[AsyncSession]:  # type: ignore[no-untyped-def]
@@ -29,6 +42,11 @@ def get_shared_engine(database_url: str):  # type: ignore[no-untyped-def]
         engine = make_engine(database_url)
         _shared_engines[database_url] = engine
     return engine
+
+
+def register_shared_engine(database_url: str, engine: object) -> None:
+    """Make request handlers reuse an engine the process already owns (one pool)."""
+    _shared_engines.setdefault(database_url, engine)
 
 
 def get_shared_session_factory(database_url: str) -> async_sessionmaker[AsyncSession]:

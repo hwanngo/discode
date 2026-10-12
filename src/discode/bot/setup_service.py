@@ -12,9 +12,11 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from discode.bot.policies.admin_auth import is_guild_admin_authorized
@@ -522,7 +524,7 @@ async def remove_path_alias(
                     PathAlias.alias == alias,
                 )
             )
-        return bool(cursor.rowcount > 0)
+        return bool(cast(CursorResult[Any], cursor).rowcount > 0)
 
 
 async def resolve_alias_or_path(

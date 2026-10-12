@@ -46,6 +46,10 @@ async def emit_event(
 
 class Event(Base):
     __tablename__ = "events"
+    __table_args__ = (
+        sa.Index("events_created_at_idx", "created_at"),
+        sa.Index("events_session_type_created_idx", "session_id", "type", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True, autoincrement=True)
     idempotency_key: Mapped[str | None] = mapped_column(sa.Text, nullable=True, unique=True)

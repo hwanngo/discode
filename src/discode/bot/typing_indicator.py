@@ -24,7 +24,7 @@ class TypingIndicatorTask:
         self._trigger = trigger
         self._refresh = refresh_interval
         self._max = max_duration
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
 
     async def start(self) -> None:

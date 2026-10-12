@@ -35,6 +35,8 @@ def _make_interaction(guild_id="1234", user_id="42", role_ids=None, role_names=N
 
     interaction.response = MagicMock()
     interaction.response.send_message = AsyncMock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
     return interaction
 
 
@@ -106,8 +108,8 @@ async def test_tool_list_formats_output():
     ):
         await list_cmd.callback(group, interaction)
 
-    interaction.response.send_message.assert_called_once()
-    call_kwargs = interaction.response.send_message.call_args
+    interaction.followup.send.assert_called_once()
+    call_kwargs = interaction.followup.send.call_args
     msg = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("content", "")
     assert "claude" in msg
     assert "codex" in msg
@@ -133,7 +135,7 @@ async def test_tool_list_empty():
     ):
         await list_cmd.callback(group, interaction)
 
-    call_kwargs = interaction.response.send_message.call_args
+    call_kwargs = interaction.followup.send.call_args
     msg = (
         call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("content", "")
     ).lower()

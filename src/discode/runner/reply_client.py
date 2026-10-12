@@ -27,7 +27,8 @@ class ReplyClient:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None:
             self._session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self._bearer}"}
+                headers={"Authorization": f"Bearer {self._bearer}"},
+                timeout=aiohttp.ClientTimeout(total=60),
             )
         return self._session
 
@@ -37,10 +38,14 @@ class ReplyClient:
         text: str,
         *,
         idempotency_key: str,
+        lifecycle_version: int | None = None,
     ) -> str:
         url = f"{self._base}/v1/sessions/{session_id}/reply"
         s = await self._get_session()
-        async with s.post(url, json={"text": text, "idempotency_key": idempotency_key}) as resp:
+        body: dict[str, str | int] = {"text": text, "idempotency_key": idempotency_key}
+        if lifecycle_version is not None:
+            body["lifecycle_version"] = lifecycle_version
+        async with s.post(url, json=body) as resp:
             if resp.status != 200:
                 detail = await resp.text()
                 raise ReplyError(resp.status, detail)

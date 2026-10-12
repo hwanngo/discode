@@ -37,7 +37,7 @@ async def handle_terminal_notice(
     ikey = envelope.get("idempotency_key", "")
     message = envelope.get("message", "")
     then_archive_raw = envelope.get("then_archive", False)
-    then_archive = bool(then_archive_raw) or then_archive_raw == "true"
+    then_archive = then_archive_raw is True or then_archive_raw == "true"
 
     # Stage 1: post
     post_ikey = f"{ikey}#post"
@@ -52,6 +52,16 @@ async def handle_terminal_notice(
 
     # Stage 2: archive if requested
     if then_archive:
+
+        async def record_archive(db: AsyncSession) -> None:
+            await db.execute(
+                text(
+                    "UPDATE sessions SET discord_thread_archived_at=now(), "
+                    "thread_archive_requested_at=now() WHERE id=:sid"
+                ),
+                {"sid": session_id or None},
+            )
+
         archive_ikey = f"{ikey}#archive"
         await _claim_act_finalize(
             db_factory,
@@ -59,6 +69,7 @@ async def handle_terminal_notice(
             ikey=archive_ikey,
             session_id=session_id,
             side_effect=lambda: archive_discord_thread(thread_id),
+            finalize=record_archive,
         )
 
     return True
@@ -71,54 +82,43 @@ async def _claim_act_finalize(
     ikey: str,
     session_id: str,
     side_effect: Callable[[], Awaitable[Any]],
+    finalize: Callable[[AsyncSession], Awaitable[None]] | None = None,
 ) -> None:
-    """Claim an idempotency key (outcome=NULL), run the side effect, then
-    finalize (outcome='done'). Skips if an existing claim is already finalized.
+    """Serialize a delivery and its finalization under the database row lock.
 
-    If ``side_effect`` raises, the claim is left unfinalized so redelivery
-    retries instead of skipping.
+    The transaction remains open during the bounded network operation. A crash
+    rolls it back; Discord's stable nonce protects retries within its deduplication
+    window. This is at-least-once delivery, not an exactly-once network guarantee.
     """
-    # Claim with outcome=NULL.
-    async with db_factory() as db:
-        async with db.begin():
-            insert_result = await db.execute(
-                text("""
-                    INSERT INTO idempotency_keys
-                        (envelope_type, idempotency_key, session_id, expires_at)
-                    VALUES
-                        (:etype, :ikey, :sid, now() + interval '7 days')
-                    ON CONFLICT DO NOTHING
-                    RETURNING idempotency_key
-                """),
-                {"etype": etype, "ikey": ikey, "sid": session_id},
-            )
-            freshly_claimed = insert_result.fetchone() is not None
-
-    # Existing claim already finalized -> genuine duplicate, skip.
-    if not freshly_claimed:
-        async with db_factory() as db:
-            outcome_result = await db.execute(
-                text("""
-                    SELECT outcome FROM idempotency_keys
-                    WHERE envelope_type = :etype AND idempotency_key = :ikey
-                """),
-                {"etype": etype, "ikey": ikey},
-            )
-            row = outcome_result.fetchone()
-        if row is not None and row[0] is not None:
+    if not ikey:
+        raise ValueError("delivery requires an idempotency key")
+    async with db_factory() as db, db.begin():
+        await db.execute(
+            text("""
+                INSERT INTO idempotency_keys
+                    (envelope_type, idempotency_key, session_id, expires_at)
+                VALUES (:etype, :ikey, :sid, now() + interval '7 days')
+                ON CONFLICT DO NOTHING
+            """),
+            {"etype": etype, "ikey": ikey, "sid": session_id or None},
+        )
+        result = await db.execute(
+            text("""
+                SELECT outcome FROM idempotency_keys
+                WHERE envelope_type = :etype AND idempotency_key = :ikey
+                FOR UPDATE
+            """),
+            {"etype": etype, "ikey": ikey},
+        )
+        if result.scalar_one() is not None:
             return
-
-    # Perform side effect. If it raises, we never finalize -> retry on redelivery.
-    await side_effect()
-
-    # Finalize only after success.
-    async with db_factory() as db:
-        async with db.begin():
-            await db.execute(
-                text("""
-                    UPDATE idempotency_keys
-                    SET outcome = 'done'
-                    WHERE envelope_type = :etype AND idempotency_key = :ikey
-                """),
-                {"etype": etype, "ikey": ikey},
-            )
+        await side_effect()
+        if finalize is not None:
+            await finalize(db)
+        await db.execute(
+            text("""
+                UPDATE idempotency_keys SET outcome = 'done'
+                WHERE envelope_type = :etype AND idempotency_key = :ikey
+            """),
+            {"etype": etype, "ikey": ikey},
+        )

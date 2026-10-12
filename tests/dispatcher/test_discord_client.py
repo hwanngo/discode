@@ -38,7 +38,7 @@ async def test_send_message_passes_nonce(client: DiscordRestClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_message_truncates_long_nonce(client: DiscordRestClient) -> None:
+async def test_send_message_hashes_full_long_nonce(client: DiscordRestClient) -> None:
     """Discord rejects nonces > 25 chars (NONCE_TYPE_TOO_LONG). UUIDs are 36."""
     _fake(client).set_response("POST", f"{BASE}/channels/224/messages", payload={"id": "776"})
     long_uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"  # 36 chars
@@ -47,7 +47,11 @@ async def test_send_message_truncates_long_nonce(client: DiscordRestClient) -> N
     sent_nonce = _fake(client).json_for("POST", f"{BASE}/channels/224/messages").get("nonce")
     assert sent_nonce is not None
     assert len(sent_nonce) <= 25
-    assert sent_nonce == long_uuid[:25]
+    assert sent_nonce != long_uuid[:25]
+    await client.send_message(thread_id="225", content="second", nonce=long_uuid + ":1")
+    assert sent_nonce != _fake(client).json_for("POST", f"{BASE}/channels/225/messages")["nonce"]
+    await client.send_message(thread_id="226", content="retry", nonce=long_uuid)
+    assert sent_nonce == _fake(client).json_for("POST", f"{BASE}/channels/226/messages")["nonce"]
 
 
 @pytest.mark.asyncio
@@ -111,3 +115,9 @@ async def test_send_message_raises_when_not_started() -> None:
     c = DiscordRestClient(token="Bot test-token")
     with pytest.raises(RuntimeError, match="not started"):
         await c.send_message(thread_id="000", content="x")
+
+
+@pytest.mark.asyncio
+async def test_untrusted_output_cannot_ping_mentions(client: DiscordRestClient) -> None:
+    await client.send_message(thread_id="227", content="@everyone <@123>")
+    assert _fake(client).last_json()["allowed_mentions"] == {"parse": []}

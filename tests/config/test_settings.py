@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from cryptography.fernet import Fernet
 
 from discode.config import Settings
 
@@ -10,7 +11,7 @@ def _base_env() -> dict[str, str]:
         "DISCORD_TOKEN": "x" * 50,
         "DATABASE_URL": "postgresql+asyncpg://u:p@h/db",
         "REDIS_URL": "redis://h",
-        "DEPLOYMENT_SECRET_KEY": "B41Sv_DoFteZnHS5xQzdYNRLKmkGooKcjCUXXohKEco=",
+        "DEPLOYMENT_SECRET_KEY": Fernet.generate_key().decode(),
         "SESSION_ISOLATION_MODE": "platform_equivalent",
     }
 

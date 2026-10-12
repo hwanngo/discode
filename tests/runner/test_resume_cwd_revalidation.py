@@ -47,9 +47,7 @@ async def test_revalidate_cwd_denylist_short_circuits():
 
 
 @pytest.mark.asyncio
-async def test_recover_skips_session_with_invalid_cwd(
-    db_session, guild_with_admin_role
-):
+async def test_recover_skips_session_with_invalid_cwd(db_session, guild_with_admin_role):
     """recover_sessions must refuse to rehydrate a session whose cwd no longer
     resolves under an allowed root (e.g. root revoked / symlink swap)."""
     import uuid
@@ -61,6 +59,11 @@ async def test_recover_skips_session_with_invalid_cwd(
 
     host_id = "host-recover-test"
     sid = uuid.uuid4()
+    from discode.db.models import RunnerHost, User
+
+    await db_session.merge(RunnerHost(id=host_id, status="online"))
+    await db_session.merge(User(id="owner-x", username="test-owner"))
+    await db_session.flush()
     db_session.add(
         SessionModel(
             id=sid,
@@ -83,9 +86,7 @@ async def test_recover_skips_session_with_invalid_cwd(
     db_factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
 
     store: dict = {}
-    recovered, failed = await recover_sessions(
-        db_factory, host_id=host_id, session_store=store
-    )
+    recovered, failed = await recover_sessions(db_factory, host_id=host_id, session_store=store)
 
     assert str(sid) not in store
     assert failed >= 1
@@ -113,6 +114,11 @@ async def test_resume_refuses_invalid_cwd(db_session, guild_with_admin_role):
 
     host_id = "host-resume-test"
     sid = uuid.uuid4()
+    from discode.db.models import RunnerHost, User
+
+    await db_session.merge(RunnerHost(id=host_id, status="online"))
+    await db_session.merge(User(id="owner-x", username="test-owner"))
+    await db_session.flush()
     db_session.add(
         SessionModel(
             id=sid,
@@ -136,6 +142,7 @@ async def test_resume_refuses_invalid_cwd(db_session, guild_with_admin_role):
             "session_id": str(sid),
             "guild_id": guild_with_admin_role.guild_id,
             "thread_id": "t",
+            "lifecycle_version": 0,
         },
         host_id=host_id,
         session_store={},

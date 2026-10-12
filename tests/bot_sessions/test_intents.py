@@ -25,10 +25,10 @@ def test_check_intents_missing_guilds():
 
 
 def test_check_intents_all_missing():
-    """check_intents returns all 3 names when no intents set."""
+    """check_intents returns both names when no intents set."""
     intents = discord.Intents.none()
     missing = check_intents(intents)
     assert "GUILDS" in missing
-    assert "GUILD_MEMBERS" in missing
+    assert "GUILD_MEMBERS" not in missing
     assert "GUILD_MESSAGES" in missing
-    assert len(missing) == 3
+    assert len(missing) == 2

@@ -2,6 +2,7 @@
 AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "session.create.requested",
+        "session.input.accepted",
         "session.create.running",
         "session.create.failed",
         "session.stop.requested",

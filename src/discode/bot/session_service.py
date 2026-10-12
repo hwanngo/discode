@@ -11,8 +11,10 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from typing import Any, cast
 
 import sqlalchemy as sa
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from discode.db.models import RedisOutbox, SessionMember
@@ -192,40 +194,65 @@ async def resolve_session_target(
     guild_id: str,
     user_id: str,
     session_ref: str | None,
+    thread_id: str | None = None,
+    member_roles: list[str] | None = None,
+    member_role_names: list[str] | None = None,
 ) -> dict[str, str] | None:
-    """Resolve *session_ref* to a session accessible by *user_id* in *guild_id*.
+    """Resolve only within the guild and actor's membership/admin scope.
 
-    - UUID string → look up by id, restricted to sessions the user owns or is a member of.
-    - Name string → look up by name, returning the user's most recent matching session.
-    - None → return the user's most recently created session in the guild.
-
-    Returns ``{"session_id": str, "name": str}`` or ``None`` if not found.
+    Explicit UUIDs, unique UUID prefixes, and unique names are supported.
+    Without a reference, prefer the current thread, then the actor's latest
+    session. Ambiguous prefixes/names return None instead of guessing.
     """
-    member_subq = sa.select(SessionMember.session_id).where(SessionMember.user_id == user_id)
-    base = (
-        sa.select(SessionModel)
-        .where(
-            SessionModel.guild_id == guild_id,
-            sa.or_(
-                SessionModel.owner_id == user_id,
-                SessionModel.id.in_(member_subq),
-            ),
-        )
-        .order_by(SessionModel.created_at.desc())
-    )
-
-    if session_ref is None:
-        stmt = base.limit(1)
-    else:
-        try:
-            session_uuid = uuid.UUID(session_ref)
-            stmt = base.where(SessionModel.id == session_uuid).limit(1)
-        except ValueError:
-            stmt = base.where(SessionModel.name == session_ref).limit(1)
+    from discode.bot.policies.admin_auth import is_guild_admin_authorized
 
     async with db_factory() as db:
-        result = await db.execute(stmt)
-        row = result.scalar_one_or_none()
+        admin = await is_guild_admin_authorized(
+            db,
+            guild_id=guild_id,
+            member_roles=member_roles or [],
+            member_role_names=member_role_names,
+        )
+        member_subq = sa.select(SessionMember.session_id).where(SessionMember.user_id == user_id)
+        base = sa.select(SessionModel).where(SessionModel.guild_id == guild_id)
+        if not admin:
+            base = base.where(
+                sa.or_(SessionModel.owner_id == user_id, SessionModel.id.in_(member_subq))
+            )
+        base = base.order_by(SessionModel.created_at.desc())
+        row = None
+        if session_ref is None and thread_id:
+            result = await db.execute(base.where(SessionModel.thread_id == thread_id).limit(1))
+            row = result.scalar_one_or_none()
+        if row is None:
+            if session_ref is None:
+                stmt = base.where(
+                    sa.or_(SessionModel.owner_id == user_id, SessionModel.id.in_(member_subq))
+                ).limit(1)
+            else:
+                try:
+                    session_uuid = uuid.UUID(session_ref)
+                    stmt = base.where(SessionModel.id == session_uuid).limit(1)
+                except ValueError:
+                    import re
+
+                    if re.fullmatch(r"[0-9a-fA-F-]{8,35}", session_ref):
+                        # Hex-looking refs may be an id prefix or a name like "deadbeef";
+                        # match both and let the ambiguity check below reject overlaps.
+                        stmt = base.where(
+                            sa.or_(
+                                sa.cast(SessionModel.id, sa.String).ilike(session_ref + "%"),
+                                SessionModel.name == session_ref,
+                            )
+                        ).limit(2)
+                    else:
+                        stmt = base.where(SessionModel.name == session_ref).limit(2)
+            result = await db.execute(stmt)
+            rows = result.scalars().all()
+            # Ambiguous names/prefixes must never silently target another session.
+            if len(rows) != 1:
+                return None
+            row = rows[0]
 
     if row is None:
         return None
@@ -233,9 +260,9 @@ async def resolve_session_target(
         "session_id": str(row.id),
         "name": row.name,
         "cwd": row.cwd,
-        "thread_id": row.thread_id,
-        "host_id": row.host_id,
-        "owner_id": row.owner_id,
+        "thread_id": row.thread_id or "",
+        "host_id": row.host_id or "",
+        "owner_id": row.owner_id or "",
     }
 
 
@@ -249,6 +276,7 @@ async def send_input_for_session(
     owner_id: str,
     text_content: str,
     enable_message_content: bool = False,
+    actor_id: str | None = None,
 ) -> str:
     """Inject `text_content` as input into the session, as if a user typed it
     in the thread. Returns the idempotency_key.
@@ -266,6 +294,7 @@ async def send_input_for_session(
         owner_id=owner_id,
         text_content=text_content,
         enable_message_content=enable_message_content,
+        actor_id=actor_id,
     )
 
 
@@ -289,11 +318,11 @@ async def run_stop_saga(
         async with db.begin():
             # Load the row first so we can derive host_id for the runner envelope
             # when the caller did not supply it.
-            sess = await db.get(SessionModel, session_uuid)
+            sess = await db.get(SessionModel, session_uuid, with_for_update=True)
             if (
                 sess is None
                 or sess.guild_id != guild_id
-                or sess.status not in ("running", "idle")
+                or sess.status not in ("creating", "resuming", "running", "idle")
             ):
                 return False
 
@@ -302,11 +331,15 @@ async def run_stop_saga(
                 .where(
                     SessionModel.id == session_uuid,
                     SessionModel.guild_id == guild_id,
-                    SessionModel.status.in_(["running", "idle"]),
+                    SessionModel.status.in_(["creating", "resuming", "running", "idle"]),
                 )
-                .values(status="stopped", stopped_at=func.now())
+                .values(
+                    status="stopping",
+                    lifecycle_changed_at=func.now(),
+                    lifecycle_version=SessionModel.lifecycle_version + 1,
+                )
             )
-            if (result.rowcount or 0) == 0:
+            if (cast(CursorResult[Any], result).rowcount or 0) == 0:
                 return False
             db.add(
                 Event(
@@ -333,6 +366,7 @@ async def run_stop_saga(
                     "session_id": str(session_id),
                     "guild_id": guild_id,
                     "host_id": target_host,
+                    "lifecycle_version": sess.lifecycle_version,
                 },
             )
     return True
@@ -371,6 +405,9 @@ async def run_archive_saga(
     session_uuid = _uuid.UUID(session_id) if isinstance(session_id, str) else session_id
     async with db_factory() as db:
         async with db.begin():
+            sess = await db.get(SessionModel, session_uuid, with_for_update=True)
+            if sess is None or sess.guild_id != guild_id:
+                return False
             result = await db.execute(
                 update(SessionModel)
                 .where(
@@ -378,9 +415,14 @@ async def run_archive_saga(
                     SessionModel.guild_id == guild_id,
                     SessionModel.status.in_(["running", "idle", "stopped"]),
                 )
-                .values(status="archived", archived_at=func.now())
+                .values(
+                    status="archived",
+                    archived_at=func.now(),
+                    lifecycle_changed_at=func.now(),
+                    lifecycle_version=SessionModel.lifecycle_version + 1,
+                )
             )
-            if (result.rowcount or 0) == 0:
+            if (cast(CursorResult[Any], result).rowcount or 0) == 0:
                 return False
             db.add(
                 Event(
@@ -392,6 +434,35 @@ async def run_archive_saga(
                     payload={},
                 )
             )
+            await write_outbox(
+                db,
+                producer="bot",
+                stream_key=f"runner:jobs:{sess.host_id}",
+                envelope_type="runner.stop_session.v1",
+                payload={
+                    "type": "runner.stop_session.v1",
+                    "idempotency_key": str(_uuid.uuid4()),
+                    "session_id": session_id,
+                    "guild_id": guild_id,
+                    "host_id": sess.host_id,
+                    "lifecycle_version": sess.lifecycle_version,
+                },
+            )
+            if sess.thread_id:
+                await write_outbox(
+                    db,
+                    producer="bot",
+                    stream_key="discord:outbound",
+                    envelope_type="discord.archive_thread.v1",
+                    payload={
+                        "type": "discord.archive_thread.v1",
+                        "idempotency_key": str(_uuid.uuid4()),
+                        "session_id": session_id,
+                        "guild_id": guild_id,
+                        "thread_id": sess.thread_id,
+                    },
+                )
+
     return True
 
 
@@ -413,7 +484,7 @@ async def run_resume_saga(
 ) -> bool:
     import uuid as _uuid
 
-    from sqlalchemy import update
+    from sqlalchemy import func, update
 
     from discode.db.models import Event
     from discode.db.models import Session as SessionModel
@@ -421,7 +492,7 @@ async def run_resume_saga(
     session_uuid = _uuid.UUID(session_id) if isinstance(session_id, str) else session_id
     async with db_factory() as db:
         async with db.begin():
-            sess = await db.get(SessionModel, session_uuid)
+            sess = await db.get(SessionModel, session_uuid, with_for_update=True)
             if sess is None or sess.guild_id != guild_id or sess.status != "archived":
                 return False
 
@@ -437,9 +508,15 @@ async def run_resume_saga(
                     SessionModel.guild_id == guild_id,
                     SessionModel.status == "archived",
                 )
-                .values(status="resuming", archived_at=None)
+                .values(
+                    status="resuming",
+                    archived_at=None,
+                    last_activity_at=func.now(),
+                    lifecycle_changed_at=func.now(),
+                    lifecycle_version=SessionModel.lifecycle_version + 1,
+                )
             )
-            if (result.rowcount or 0) == 0:
+            if (cast(CursorResult[Any], result).rowcount or 0) == 0:
                 return False
             db.add(
                 Event(
@@ -464,6 +541,7 @@ async def run_resume_saga(
                     "session_id": str(session_id),
                     "guild_id": guild_id,
                     "host_id": target_host,
+                    "lifecycle_version": sess.lifecycle_version,
                     "thread_id": sess.thread_id or "",
                 },
             )
@@ -492,7 +570,7 @@ async def run_restart_saga(
 ) -> str:
     import uuid as _uuid
 
-    from sqlalchemy import update
+    from sqlalchemy import func, update
 
     from discode.db.models import Event
     from discode.db.models import Session as SessionModel
@@ -500,6 +578,9 @@ async def run_restart_saga(
     session_uuid = _uuid.UUID(session_id) if isinstance(session_id, str) else session_id
     async with db_factory() as db:
         async with db.begin():
+            sess = await db.get(SessionModel, session_uuid, with_for_update=True)
+            if sess is None or sess.guild_id != guild_id:
+                raise ValueError("session not found")
             result = await db.execute(
                 update(SessionModel)
                 .where(
@@ -507,9 +588,16 @@ async def run_restart_saga(
                     SessionModel.guild_id == guild_id,
                     SessionModel.status.in_(["running", "idle", "stopped"]),
                 )
-                .values(tool_resume_token=None, status="running")
+                .values(
+                    tool_resume_token=None,
+                    status="resuming",
+                    stopped_at=None,
+                    last_activity_at=func.now(),
+                    lifecycle_changed_at=func.now(),
+                    lifecycle_version=SessionModel.lifecycle_version + 1,
+                )
             )
-            if (result.rowcount or 0) == 0:
+            if (cast(CursorResult[Any], result).rowcount or 0) == 0:
                 raise ValueError(f"session {session_id} not in restartable state")
             db.add(
                 Event(
@@ -521,6 +609,22 @@ async def run_restart_saga(
                     payload={},
                 )
             )
+            await write_outbox(
+                db,
+                producer="bot",
+                stream_key=f"runner:jobs:{sess.host_id}",
+                envelope_type="runner.restart_session.v1",
+                payload={
+                    "type": "runner.restart_session.v1",
+                    "idempotency_key": str(_uuid.uuid4()),
+                    "session_id": session_id,
+                    "guild_id": guild_id,
+                    "host_id": sess.host_id,
+                    "thread_id": sess.thread_id or "",
+                    "lifecycle_version": sess.lifecycle_version,
+                },
+            )
+
     return session_id
 
 
@@ -565,7 +669,7 @@ async def invite_user_to_session(
 
     async with db_factory() as db:
         async with db.begin():
-            sess = await db.get(SessionModel, session_uuid)
+            sess = await db.get(SessionModel, session_uuid, with_for_update=True)
             if sess is None or sess.guild_id != guild_id:
                 return False
 
@@ -668,8 +772,10 @@ async def is_session_owner_or_admin(
     session_uuid = uuid.UUID(session_id) if isinstance(session_id, str) else session_id
     async with db_factory() as db:
         sess_row = await db.get(SessionModel, session_uuid)
-        if sess_row is not None and sess_row.owner_id == user_id:
+        if sess_row is not None and sess_row.guild_id == guild_id and sess_row.owner_id == user_id:
             return True
+        if sess_row is None or sess_row.guild_id != guild_id:
+            return False
         return await is_guild_admin_authorized(
             db,
             guild_id=guild_id,

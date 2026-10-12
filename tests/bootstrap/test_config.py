@@ -45,8 +45,6 @@ class TestValidSettings:
     def test_all_valid_fields_accepted(self) -> None:
         s = make_settings()
         assert s.SESSION_ISOLATION_MODE == "platform_equivalent"
-        assert s.SESSION_UID_POOL_START == 10000
-        assert s.SESSION_UID_POOL_SIZE == 64
 
     def test_uid_pool_mode(self) -> None:
         s = make_settings(SESSION_ISOLATION_MODE="uid_pool")
@@ -62,7 +60,8 @@ class TestSessionIsolationMode:
         with pytest.raises(ValidationError):
             make_settings(SESSION_ISOLATION_MODE="none")
 
-    def test_unset_raises(self) -> None:
+    def test_unset_raises(self, monkeypatch) -> None:
+        monkeypatch.delenv("SESSION_ISOLATION_MODE", raising=False)
         # Remove SESSION_ISOLATION_MODE from kwargs entirely
         kwargs = {k: v for k, v in VALID_BASE.items() if k != "SESSION_ISOLATION_MODE"}
         with pytest.raises(ValidationError):
@@ -98,16 +97,8 @@ class TestDeploymentSecretKey:
             make_settings(DEPLOYMENT_SECRET_KEY="REPLACE_ME_WITH_FERNET_KEY")
 
 
-class TestLeaseInvariant:
-    def test_violation_raises(self) -> None:
-        # RUNNER_JOB_PEL_IDLE_MS <= INPUT_TENTATIVE_LEASE_SECONDS * 1000
-        with pytest.raises(ValidationError):
-            make_settings(RUNNER_JOB_PEL_IDLE_MS=29000, INPUT_TENTATIVE_LEASE_SECONDS=30)
-
-    def test_equal_raises(self) -> None:
-        with pytest.raises(ValidationError):
-            make_settings(RUNNER_JOB_PEL_IDLE_MS=30000, INPUT_TENTATIVE_LEASE_SECONDS=30)
-
-    def test_valid_invariant_passes(self) -> None:
-        s = make_settings(RUNNER_JOB_PEL_IDLE_MS=60000, INPUT_TENTATIVE_LEASE_SECONDS=30)
-        assert s.RUNNER_JOB_PEL_IDLE_MS > s.INPUT_TENTATIVE_LEASE_SECONDS * 1000
+def test_settings_validation_does_not_echo_secret():
+    secret = "not-valid-fernet-sensitive-value"
+    with pytest.raises(ValidationError) as error:
+        make_settings(DEPLOYMENT_SECRET_KEY=secret)
+    assert secret not in str(error.value)

@@ -120,7 +120,7 @@ def test_render_help_appends_perm_tags():
 
     chunks = _render_help_text(_make_tree([tool_group]))
     text = chunks[0]
-    assert "[admin]" in text
+    assert "[platform admin]" in text
 
 
 def test_render_help_no_tag_for_unmapped_commands():

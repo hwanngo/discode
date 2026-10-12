@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 import redis.asyncio as aioredis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
 from sqlalchemy import select, update
 
 from discode.db.engine import make_engine, make_session_factory
@@ -147,7 +149,7 @@ async def test_exponential_backoff_on_xadd_failure(db_factory, relay_redis) -> N
 
     # Mock redis to raise on xadd
     failing_redis = AsyncMock()
-    failing_redis.xadd = AsyncMock(side_effect=ConnectionError("Redis connection refused"))
+    failing_redis.xadd = AsyncMock(side_effect=ResponseError("WRONGTYPE"))
 
     relay = RelayLoop(producer=producer, redis_client=failing_redis, db_factory=db_factory)
     drained = await relay.drain_once()
@@ -193,7 +195,7 @@ async def test_max_attempts_stops_retrying(db_factory, relay_redis) -> None:  # 
             )
 
     failing_redis = AsyncMock()
-    failing_redis.xadd = AsyncMock(side_effect=ConnectionError("Redis unavailable"))
+    failing_redis.xadd = AsyncMock(side_effect=ResponseError("OOM"))
 
     relay = RelayLoop(producer=producer, redis_client=failing_redis, db_factory=db_factory)
     await relay.drain_once()
@@ -254,3 +256,36 @@ async def test_exhausted_row_not_reselected(db_factory, relay_redis) -> None:  #
         ).scalar_one()
         assert updated.published_at is None
         assert updated.attempts == OUTBOX_MAX_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_redis_outage_does_not_consume_attempts(db_factory, relay_redis) -> None:  # type: ignore[no-untyped-def]
+    """Audit 2026-10-12: a Redis outage pauses the relay without exhausting rows."""
+    producer = "bot_outage_test"
+    async with db_factory() as session:
+        async with session.begin():
+            row = await write_outbox(
+                session,
+                producer=producer,
+                stream_key="discord:outbound:test_outage",
+                envelope_type="t",
+                payload={"x": 1},
+            )
+            row_id = row.id
+
+    down = AsyncMock()
+    down.xadd = AsyncMock(side_effect=RedisConnectionError("Connection refused"))
+    relay = RelayLoop(producer=producer, redis_client=down, db_factory=db_factory)
+    for _ in range(3):
+        assert await relay.drain_once() == 0
+    assert relay._redis_unavailable
+
+    async with db_factory() as session:
+        stored = (
+            await session.execute(select(RedisOutbox).where(RedisOutbox.id == row_id))
+        ).scalar_one()
+        assert stored.attempts == 0
+        assert stored.error is None
+
+    relay.redis = relay_redis
+    assert await relay.drain_once() == 1

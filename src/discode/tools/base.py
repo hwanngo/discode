@@ -13,8 +13,7 @@ class ToolAdapter(ABC):
 
     def env_allowlist(self) -> list[str]:
         """Environment variable names that should always pass through to the
-        worker subprocess. Returned by adapters for documentation; the runner
-        currently inherits the full process env.
+        worker subprocess. Infrastructure secrets are always excluded.
         """
         return []
 

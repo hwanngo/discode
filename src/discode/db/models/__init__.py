@@ -6,6 +6,7 @@ from .guild import Guild, GuildSettings, User
 from .guild_admin_role_policy import GuildAdminRolePolicy
 from .guild_tool_channel_map import GuildToolChannelMap
 from .idempotency import IdempotencyKey
+from .input_turn import InputTurn
 from .path_alias import PathAlias
 from .redis_outbox import RedisOutbox
 from .runner_host import RunnerHost
@@ -15,6 +16,7 @@ from .tool_definition import ToolDefinition
 
 __all__ = [
     "Base",
+    "InputTurn",
     "Guild",
     "GuildSettings",
     "User",

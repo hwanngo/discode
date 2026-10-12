@@ -20,6 +20,7 @@ class FakeConsumer:
         self.message_id = message_id
         self.fields = fields if fields is not None else {"payload": "{}"}
         self.acked: list[str] = []
+        self.dead_lettered: list[tuple[str, str]] = []
         self.deliveries = 0
 
     async def claim_pending(self):
@@ -35,6 +36,12 @@ class FakeConsumer:
         return []
 
     async def ack(self, message_id: str) -> None:
+        self.acked.append(message_id)
+
+    dead_letter_key = "discode:deadletter:test"
+
+    async def dead_letter(self, message_id: str, fields, *, reason: str, attempts: int) -> None:
+        self.dead_lettered.append((message_id, reason))
         self.acked.append(message_id)
 
     async def delivery_count(self, message_id: str) -> int:

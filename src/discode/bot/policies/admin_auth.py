@@ -50,3 +50,31 @@ async def is_guild_admin_authorized(
 
     # Policy row exists but no role configured yet — DENY (enforce, don't fail open).
     return False
+
+
+def is_guild_allowed(guild_id: int | str | None) -> bool:
+    """Return True if the bot serves this guild. An empty allowlist denies all guilds."""
+    from discode.config import settings
+
+    return guild_id is not None and str(guild_id) in settings.allowed_guild_ids
+
+
+async def can_operate_sessions(
+    session: AsyncSession,
+    *,
+    guild_id: str,
+    user_id: str,
+    member_roles: list[str],
+    member_role_names: list[str] | None = None,
+) -> bool:
+    """Return True if the member may start sessions or allow workspace roots.
+
+    Both actions run an agent with host access on the runner, so they require a
+    platform admin or the guild's Discode admin role. Fails closed like
+    :func:`is_guild_admin_authorized`.
+    """
+    from discode.config import settings
+
+    if user_id in settings.platform_admin_user_ids:
+        return True
+    return await is_guild_admin_authorized(session, guild_id, member_roles, member_role_names)

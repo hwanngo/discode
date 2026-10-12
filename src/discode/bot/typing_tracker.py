@@ -19,8 +19,8 @@ class TypingTracker:
     """Per-bot-process typing-indicator state machine.
 
     Maintains a per-thread pending user-message counter. The indicator is
-    visible iff the counter is > 0; the first user message starts it, every
-    bot reply decrements, hitting zero stops it. A safety timeout zeroes the
+    visible iff the counter is > 0; the first accepted user turn starts it.
+    Durable completion watchers decrement once per turn; zero stops it. A safety timeout zeroes the
     counter so a lost reply or runner crash never leaves the indicator stuck.
     """
 
@@ -37,6 +37,7 @@ class TypingTracker:
         self._counts: dict[str, int] = {}
         self._tasks: dict[str, TypingIndicatorTask] = {}
         self._timeouts: dict[str, asyncio.Task[None]] = {}
+        self.completion_tasks: set[asyncio.Task[None]] = set()
 
     def pending(self, thread_id: str) -> int:
         return self._counts.get(thread_id, 0)
@@ -82,9 +83,13 @@ class TypingTracker:
 
     async def _stop(self, thread_id: str, *, reason: str) -> None:
         task = self._tasks.pop(thread_id, None)
-        self._counts[thread_id] = 0
+        self._counts.pop(thread_id, None)
         timeout_task = self._timeouts.pop(thread_id, None)
-        if timeout_task is not None and not timeout_task.done():
+        if (
+            timeout_task is not None
+            and timeout_task is not asyncio.current_task()
+            and not timeout_task.done()
+        ):
             timeout_task.cancel()
             try:
                 await timeout_task
@@ -95,5 +100,9 @@ class TypingTracker:
         logger.info("typing_tracker: stop sid_thread=%s reason=%s", thread_id, reason)
 
     async def shutdown(self) -> None:
+        tasks = list(self.completion_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for thread_id in list(self._tasks):
             await self._stop(thread_id, reason="shutdown")

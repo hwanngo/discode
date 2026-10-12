@@ -152,3 +152,56 @@ async def test_reply_503_when_state_unwired(monkeypatch: pytest.MonkeyPatch) -> 
     assert resp.status_code == 503
     monkeypatch.delenv("RUNNER_CONTROL_AUTH", raising=False)
     importlib.reload(mod)
+
+
+@pytest.mark.asyncio
+async def test_reply_rechecks_lifecycle_between_chunks(app_with_auth):
+    app, discord, _, lookup = app_with_auth
+    lookup.side_effect = [
+        {"thread_id": "thr-1", "status": "running", "lifecycle_version": 1},
+        {"thread_id": "thr-1", "status": "running", "lifecycle_version": 1},
+        {"thread_id": "thr-1", "status": "stopped", "lifecycle_version": 2},
+    ]
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/sessions/s/reply",
+            json={"text": "x" * 3000, "idempotency_key": "key"},
+            headers={"Authorization": "Bearer test-bearer"},
+        )
+    assert response.status_code == 409
+    assert discord.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_output_quota_defers_without_sending(app_with_auth):
+    app, discord, _, _ = app_with_auth
+    app.state.output_quota = AsyncMock(return_value=False)
+    try:
+        async with _client(app) as client:
+            response = await client.post(
+                "/v1/sessions/s/reply",
+                json={"text": "hello", "idempotency_key": "key"},
+                headers={"Authorization": "Bearer test-bearer"},
+            )
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "60"
+        discord.send_message.assert_not_awaited()
+    finally:
+        del app.state.output_quota
+
+
+@pytest.mark.asyncio
+async def test_private_bind_requires_auth_but_allows_remote_client(app_with_auth, monkeypatch):
+    from discode.config import settings
+
+    app, _, _, _ = app_with_auth
+    monkeypatch.setattr(settings._load(), "RUNNER_CONTROL_BIND", "10.0.0.1:8788")
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("10.0.0.2", 1234)), base_url="http://test"
+    ) as client:
+        assert (await client.get("/v1/preflight")).status_code == 401
+        response = await client.get(
+            "/v1/preflight", headers={"Authorization": "Bearer test-bearer"}
+        )
+        assert response.status_code == 200
+        assert response.json()["sandboxed"] is False

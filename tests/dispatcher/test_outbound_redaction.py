@@ -140,6 +140,10 @@ class _FakeResult:
     def fetchone(self):
         return self._row
 
+    def scalar_one(self):
+        assert self._row is not None
+        return self._row[0]
+
 
 class _FakeDB:
     def __init__(self, store: dict):

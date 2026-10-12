@@ -15,10 +15,13 @@ import logging
 import string
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, cast
 from urllib.parse import urlparse
 
+from cryptography.fernet import MultiFernet
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from discode.bot.policies.admin_auth import is_guild_admin_authorized
@@ -51,6 +54,8 @@ def _validate_model(v: str) -> str | None:
         return "model must be ≤ 128 chars"
     if any(c not in _PRINTABLE for c in v):
         return "model must contain only printable ASCII"
+    if v.startswith("-") or any(c.isspace() for c in v):
+        return "model must not start with '-' or contain whitespace"
     return None
 
 
@@ -85,7 +90,7 @@ _RESERVED_KEYS: dict[str, KeySpec] = {
 # ---------------------------------------------------------------------------
 
 
-def _fernet():
+def _fernet() -> MultiFernet:
     return load_multifernet(settings.DEPLOYMENT_SECRET_KEY)
 
 
@@ -180,7 +185,7 @@ async def set_session_config(
         return SetResult(False, False, f"unknown session '{session_id}'")
     if not await is_guild_admin_authorized(
         session,
-        guild_id=sess.guild_id,
+        guild_id=sess.guild_id or "",
         member_roles=member_roles,
         member_role_names=member_role_names,
     ):
@@ -272,7 +277,7 @@ async def clear_session_config_key(
         return ClearResult(False, False, False, f"unknown session '{session_id}'")
     if not await is_guild_admin_authorized(
         session,
-        guild_id=sess.guild_id,
+        guild_id=sess.guild_id or "",
         member_roles=member_roles,
         member_role_names=member_role_names,
     ):
@@ -283,7 +288,7 @@ async def clear_session_config_key(
             SessionConfig.key == key,
         )
     )
-    deleted = (result.rowcount or 0) > 0
+    deleted = (cast(CursorResult[Any], result).rowcount or 0) > 0
     msg = f"Cleared '{key}'." if deleted else "Nothing to clear."
     return ClearResult(True, True, deleted, msg)
 
@@ -300,7 +305,7 @@ async def clear_all_session_config(
         return ClearAllResult(False, False, 0, f"unknown session '{session_id}'")
     if not await is_guild_admin_authorized(
         session,
-        guild_id=sess.guild_id,
+        guild_id=sess.guild_id or "",
         member_roles=member_roles,
         member_role_names=member_role_names,
     ):
@@ -308,7 +313,7 @@ async def clear_all_session_config(
     result = await session.execute(
         delete(SessionConfig).where(SessionConfig.session_id == session_id)
     )
-    count = result.rowcount or 0
+    count = cast(CursorResult[Any], result).rowcount or 0
     return ClearAllResult(True, True, count, f"Cleared {count} override(s).")
 
 

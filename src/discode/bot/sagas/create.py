@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from discode.db.accessors.supersede import superseded_by
 from discode.db.models import (
     Event,
     Guild,
@@ -29,6 +30,21 @@ class CreateSessionResult:
     session_id: str
     hook_secret_ciphertext: str  # encrypted to deployment key
     resumed_from_session_id: str | None = field(default=None)
+
+
+SESSION_LIMIT_MESSAGE = "Active session limit reached; stop or archive an existing session"
+
+
+async def active_session_count(db: AsyncSession, guild_id: str, owner_id: str) -> int:
+    """Sessions that count toward MAX_ACTIVE_SESSIONS_PER_USER."""
+    count = await db.scalar(
+        text("""
+        SELECT count(*) FROM sessions WHERE guild_id=:gid AND owner_id=:uid
+        AND status NOT IN ('archived','stopped','failed','orphaned')
+    """),
+        {"gid": guild_id, "uid": owner_id},
+    )
+    return int(count or 0)
 
 
 async def run_create_saga(
@@ -71,35 +87,45 @@ async def run_create_saga(
     archived_session_id: str | None = None
 
     async with db_factory() as db:
+        from discode.config import settings
+        from discode.db.models import ToolDefinition
+
+        definition = await db.get(ToolDefinition, tool)
+        if definition is None or not definition.enabled:
+            raise ValueError("Unknown or disabled tool")
+        if definition.resume_token_source == "sentinel":
+            raise ValueError("Tool has no isolated conversation identity")
+        # Serialize creation per owner; quota checking and insertion share the lock.
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"create:{guild_id}:{owner_id}"},
+        )
+        if await active_session_count(db, guild_id, owner_id) >= (
+            settings.MAX_ACTIVE_SESSIONS_PER_USER
+        ):
+            raise ValueError(SESSION_LIMIT_MESSAGE)
         result = await db.execute(
             text("""
-                SELECT id, tool_resume_token
-                FROM sessions
+                SELECT id, tool_resume_token FROM sessions
                 WHERE name = :name AND guild_id = :gid AND owner_id = :uid
+                  AND tool = :tool AND cwd_realpath = :cwd
                   AND status = 'archived'
-                ORDER BY created_at DESC
-                LIMIT 1
+                  AND COALESCE(status_reason, '') NOT LIKE 'superseded%'
+                ORDER BY created_at DESC LIMIT 1 FOR UPDATE
             """),
-            {"name": name, "gid": guild_id, "uid": owner_id},
+            {"name": name, "gid": guild_id, "uid": owner_id, "tool": tool, "cwd": cwd_realpath},
         )
         archived_row = result.fetchone()
+        if archived_row is not None:
+            archived_session_id = str(archived_row[0])
+            if resume_token_to_use is None:
+                resume_token_to_use = archived_row[1]
+            # Tagged with the successor so a failed start can release it again.
+            await db.execute(
+                text("UPDATE sessions SET status_reason=:reason WHERE id=:sid"),
+                {"sid": archived_row[0], "reason": superseded_by(session_id)},
+            )
 
-    if archived_row is not None:
-        archived_session_id = str(archived_row[0])
-        existing_resume_token = archived_row[1]
-
-        if resume_token_to_use is None:
-            resume_token_to_use = existing_resume_token
-
-        # Mark the archived row as superseded
-        async with db_factory() as db:
-            async with db.begin():
-                await db.execute(
-                    text("UPDATE sessions SET status_reason='superseded' WHERE id=:sid"),
-                    {"sid": archived_session_id},
-                )
-
-    async with db_factory() as db:
         # Step 1: Upsert Guild
         await db.execute(
             pg_insert(Guild)

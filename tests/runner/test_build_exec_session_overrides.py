@@ -88,7 +88,7 @@ async def test_base_url_override_injected_into_env(
         db_session,
         session_id=seed_session_in_guild.id,
         key="base_url",
-        value="http://localhost:11434",
+        value="https://8.8.8.8",
         **auth,
     )
     await db_session.commit()
@@ -96,7 +96,7 @@ async def test_base_url_override_injected_into_env(
     sess = await build_exec_session(
         _store_entry(seed_session_in_guild), _payload(seed_session_in_guild), db_session
     )
-    assert sess._env.get("ANTHROPIC_BASE_URL") == "http://localhost:11434"
+    assert sess._env.get("ANTHROPIC_BASE_URL") == "https://8.8.8.8"
 
 
 @pytest.mark.asyncio

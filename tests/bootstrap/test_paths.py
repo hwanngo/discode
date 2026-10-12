@@ -43,3 +43,32 @@ class TestCanonicalize:
         # /tmp may resolve to /private/tmp on macOS, that's fine
         real, reason = canonicalize("/tmp/workspace")
         assert reason is None
+
+
+class TestDenylistAnchoring:
+    """Audit 2026-10-12: system dirs are denied at the root, not anywhere in the path."""
+
+    def test_project_folders_named_like_system_dirs_allowed(self, tmp_path) -> None:
+        for name in ("dev", "etc", "root", "sys", "boot", "proc"):
+            project = tmp_path / name / "app"
+            project.mkdir(parents=True)
+            _, reason = canonicalize(str(project))
+            assert reason is None, (name, reason)
+
+    def test_system_roots_still_denied(self) -> None:
+        for path in ("/etc/passwd", "/dev/null", "/proc/self", "/etc"):
+            _, reason = canonicalize(path)
+            assert reason is not None, path
+
+    def test_dotfile_dirs_denied_anywhere(self, tmp_path) -> None:
+        _, reason = canonicalize(str(tmp_path / "repo" / ".ssh"))
+        assert reason is not None
+
+
+def test_is_within_root_handles_trailing_slash_and_filesystem_root() -> None:
+    from discode.security.paths import is_within_root
+
+    assert is_within_root("/srv/app", "/srv/app")
+    assert is_within_root("/srv/app/x", "/srv/app/")
+    assert is_within_root("/srv/app/x", "/")
+    assert not is_within_root("/srv/application", "/srv/app")

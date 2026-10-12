@@ -18,6 +18,7 @@ from discode.janitor.main import (
 async def test_run_sweep_once_sums_all_sweeps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("discode.janitor.main.sweep_creating_watchdog", AsyncMock(return_value=1))
     monkeypatch.setattr("discode.janitor.main.sweep_resuming_watchdog", AsyncMock(return_value=2))
+    monkeypatch.setattr("discode.janitor.main.sweep_stopping_watchdog", AsyncMock(return_value=0))
     monkeypatch.setattr("discode.janitor.main.sweep_idle_timeout", AsyncMock(return_value=3))
     monkeypatch.setattr("discode.janitor.main.sweep_archive_timeout", AsyncMock(return_value=4))
     monkeypatch.setattr("discode.janitor.main.sweep_stop_timeout", AsyncMock(return_value=5))
@@ -27,6 +28,7 @@ async def test_run_sweep_once_sums_all_sweeps(monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setattr("discode.janitor.main.sweep_idempotency_keys", AsyncMock(return_value=7))
     monkeypatch.setattr("discode.janitor.main.sweep_events", AsyncMock(return_value=9))
+    monkeypatch.setattr("discode.janitor.main.sweep_turn_results", AsyncMock(return_value=0))
     monkeypatch.setattr("discode.janitor.main.sweep_outbox", AsyncMock(return_value=8))
     monkeypatch.setattr("discode.janitor.main.scan_input_dead_letters", AsyncMock(return_value=10))
     monkeypatch.setattr(
@@ -37,6 +39,37 @@ async def test_run_sweep_once_sums_all_sweeps(monkeypatch: pytest.MonkeyPatch) -
     total = await _run_sweep_body(db_factory=AsyncMock(), redis_client=object())
 
     assert total == 55
+
+
+@pytest.mark.asyncio
+async def test_failing_sweep_does_not_skip_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audit 2026-10-12: sweeps are isolated from each other's failures."""
+    for name in (
+        "sweep_resuming_watchdog",
+        "sweep_stopping_watchdog",
+        "sweep_idle_timeout",
+        "sweep_archive_timeout",
+        "sweep_stop_timeout",
+        "sweep_runner_heartbeat_orphans",
+        "sweep_idempotency_keys",
+        "sweep_events",
+        "sweep_turn_results",
+        "sweep_outbox",
+        "scan_input_dead_letters",
+    ):
+        monkeypatch.setattr(f"discode.janitor.main.{name}", AsyncMock(return_value=1))
+    monkeypatch.setattr(
+        "discode.janitor.main.sweep_creating_watchdog",
+        AsyncMock(side_effect=RuntimeError("db blip")),
+    )
+    monkeypatch.setattr(
+        "discode.janitor.main.sweep_session_thread_binding_drift",
+        AsyncMock(side_effect=RuntimeError("db blip")),
+    )
+
+    total = await _run_sweep_body(db_factory=AsyncMock(), redis_client=object())
+
+    assert total == 11
 
 
 def _cm_db_factory() -> object:
@@ -53,9 +86,7 @@ def _cm_db_factory() -> object:
 async def test_run_sweep_once_skips_when_lock_held(monkeypatch: pytest.MonkeyPatch) -> None:
     """A second concurrent janitor that fails to acquire the advisory lock skips
     the sweep pass (returns -1) and does not run the sweep body."""
-    monkeypatch.setattr(
-        "discode.janitor.main.acquire_advisory_lock", AsyncMock(return_value=False)
-    )
+    monkeypatch.setattr("discode.janitor.main.acquire_advisory_lock", AsyncMock(return_value=False))
     release_mock = AsyncMock()
     monkeypatch.setattr("discode.janitor.main.release_advisory_lock", release_mock)
     body_mock = AsyncMock(return_value=99)
@@ -74,9 +105,7 @@ async def test_run_sweep_once_runs_and_releases_when_lock_acquired(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the advisory lock is acquired, the body runs and the lock is released."""
-    monkeypatch.setattr(
-        "discode.janitor.main.acquire_advisory_lock", AsyncMock(return_value=True)
-    )
+    monkeypatch.setattr("discode.janitor.main.acquire_advisory_lock", AsyncMock(return_value=True))
     release_mock = AsyncMock()
     monkeypatch.setattr("discode.janitor.main.release_advisory_lock", release_mock)
     body_mock = AsyncMock(return_value=42)
@@ -118,7 +147,8 @@ async def test_run_janitor_runs_sweep_and_relay(monkeypatch: pytest.MonkeyPatch)
                 raise
 
     monkeypatch.setattr("discode.janitor.main.RelayLoop", FakeRelayLoop)
-    monkeypatch.setattr("discode.janitor.main.os.environ.get", lambda _k, _d: "0")
+    runtime.settings.JANITOR_SWEEP_INTERVAL_SECONDS = 0
+    runtime.start_metrics = lambda _bind: None
 
     sleep_calls = 0
 

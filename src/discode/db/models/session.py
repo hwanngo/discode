@@ -25,6 +25,7 @@ class Session(Base):
         sa.Index("sessions_guild_status_idx", "guild_id", "status"),
         sa.Index("sessions_host_status_idx", "host_id", "status"),
         sa.Index("sessions_owner_idx", "owner_id"),
+        sa.Index("sessions_status_activity_idx", "status", "last_activity_at"),
         sa.Index(
             "sessions_archive_pending_idx",
             "id",
@@ -55,6 +56,10 @@ class Session(Base):
     shim_token_hash: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     tool_resume_token: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     status: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    lifecycle_version: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
+    lifecycle_changed_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+    )
     status_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")

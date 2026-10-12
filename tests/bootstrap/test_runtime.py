@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from cryptography.fernet import Fernet
 
 from discode.config import Settings
 from discode.runtime import AppRuntime
@@ -14,7 +15,7 @@ def _settings() -> Settings:
         DISCORD_TOKEN="token",
         DATABASE_URL="postgresql+asyncpg://user:pass@localhost/db",
         REDIS_URL="redis://localhost:6379/0",
-        DEPLOYMENT_SECRET_KEY="eW91ci1zZWNyZXQta2V5LW11c3QtYmUtMzItYnl0ZXM=",
+        DEPLOYMENT_SECRET_KEY=Fernet.generate_key().decode(),
         SESSION_ISOLATION_MODE="platform_equivalent",
     )
 
@@ -48,6 +49,10 @@ def test_runtime_from_settings_builds_dependencies() -> None:
     assert runtime.engine == "engine"
     assert runtime.db_factory == "factory"
     assert runtime.redis == "redis"
-    make_engine.assert_called_once_with(settings.DATABASE_URL)
+    make_engine.assert_called_once_with(
+        settings.DATABASE_URL,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+    )
     make_session_factory.assert_called_once_with("engine")
     from_url.assert_called_once_with(settings.REDIS_URL, decode_responses=False)

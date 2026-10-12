@@ -15,6 +15,7 @@ from discode.janitor.timeouts import (
     sweep_creating_watchdog,
     sweep_idle_timeout,
     sweep_resuming_watchdog,
+    sweep_stopping_watchdog,
 )
 
 
@@ -115,7 +116,8 @@ async def test_sweep_creating_watchdog_emits_outbox_notice(db_factory_fixture):
     async with db_factory_fixture() as db:
         result = await db.execute(
             sa.select(RedisOutbox).where(
-                sa.func.json_extract_path_text(RedisOutbox.payload, "session_id") == session_id
+                sa.func.json_extract_path_text(RedisOutbox.payload, "session_id") == session_id,
+                RedisOutbox.envelope_type == "discord.system_notice.v1",
             )
         )
         outbox_row = result.scalar_one_or_none()
@@ -152,7 +154,7 @@ async def test_sweep_resuming_watchdog_transitions_old_resuming_sessions(db_fact
         async with db.begin():
             await db.execute(
                 text(
-                    "UPDATE sessions SET last_activity_at = now()"
+                    "UPDATE sessions SET lifecycle_changed_at = now()"
                     " - interval '10 minutes' WHERE id = :sid"
                 ),
                 {"sid": session_id},
@@ -223,9 +225,40 @@ async def test_sweep_archive_timeout_transitions_idle_to_archived(db_factory_fix
 
         result = await db.execute(
             sa.select(RedisOutbox).where(
-                sa.func.json_extract_path_text(RedisOutbox.payload, "session_id") == session_id
+                sa.func.json_extract_path_text(RedisOutbox.payload, "session_id") == session_id,
+                RedisOutbox.envelope_type == "discord.archive_thread.v1",
             )
         )
         outbox_row = result.scalar_one_or_none()
         assert outbox_row is not None
         assert outbox_row.envelope_type == "discord.archive_thread.v1"
+
+
+@pytest.mark.asyncio
+async def test_sweep_stopping_watchdog_releases_stuck_sessions(db_factory_fixture):
+    """Audit 2026-10-12: 'stopping' sessions whose stop never completes become 'stopped'."""
+    guild_id, user_id, host_id = _unique_ids()
+    await _seed_prerequisites(db_factory_fixture, guild_id, user_id, host_id)
+    stuck = await _insert_session(db_factory_fixture, guild_id, host_id, "stopping")
+    fresh = await _insert_session(db_factory_fixture, guild_id, host_id, "stopping")
+    async with db_factory_fixture() as db, db.begin():
+        await db.execute(
+            text(
+                "UPDATE sessions SET lifecycle_changed_at = now() - interval '1 hour' "
+                "WHERE id = :sid"
+            ),
+            {"sid": stuck},
+        )
+
+    assert await sweep_stopping_watchdog(db_factory_fixture, threshold_seconds=600) == 1
+
+    async with db_factory_fixture() as db:
+        rows = dict(
+            (
+                await db.execute(
+                    text("SELECT id::text, status FROM sessions WHERE id IN (:a, :b)"),
+                    {"a": stuck, "b": fresh},
+                )
+            ).all()
+        )
+    assert rows == {stuck: "stopped", fresh: "stopping"}

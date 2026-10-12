@@ -7,14 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_root_add_no_alias_admin_check_skipped():
-    """When no alias is provided, the admin gate is NOT consulted."""
-    from discode.bot.main import RootCommands
-
-    cmds = RootCommands()
-    add_cmd = cmds.get_command("add")
-
+def _interaction():
     interaction = MagicMock()
     interaction.guild_id = 1234
     interaction.user.id = 5678
@@ -23,30 +16,38 @@ async def test_root_add_no_alias_admin_check_skipped():
     interaction.response.defer = AsyncMock()
     interaction.followup = MagicMock()
     interaction.followup.send = AsyncMock()
+    return interaction
 
-    fake_root_result = MagicMock(realpath="/tmp/x")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorized", [True, False])
+async def test_root_add_no_alias_requires_operator(authorized):
+    """Without an alias, only platform/guild admins may allow a root."""
+    from discode.bot.main import RootCommands
+
+    cmds = RootCommands()
+    add_cmd = cmds.get_command("add")
+    interaction = _interaction()
+    add_root_mock = AsyncMock(return_value=MagicMock(realpath="/tmp/x"))
 
     with (
-        patch("discode.db.engine.make_engine") as mock_engine,
-        patch("discode.db.engine.make_session_factory") as mock_factory,
+        patch("discode.db.engine.get_shared_engine"),
+        patch("discode.db.engine.make_session_factory"),
+        patch("discode.bot.setup_service.add_allowed_root_for_user", new=add_root_mock),
         patch(
-            "discode.bot.setup_service.add_allowed_root_for_user",
-            new=AsyncMock(return_value=fake_root_result),
+            "discode.bot.policies.admin_auth.can_operate_sessions",
+            new=AsyncMock(return_value=authorized),
         ),
-        patch(
-            "discode.bot.policies.admin_auth.is_guild_admin_authorized",
-            new=AsyncMock(return_value=False),  # gate would reject if called
-        ) as mock_admin_check,
     ):
-        mock_engine.return_value = MagicMock()
-        mock_engine.return_value.dispose = AsyncMock()
-        mock_factory.return_value = MagicMock()
         await add_cmd.callback(cmds, interaction, path="/tmp/x")
 
-    mock_admin_check.assert_not_awaited()
-    interaction.followup.send.assert_called_once()
     msg = interaction.followup.send.call_args.args[0]
-    assert "/tmp/x" in msg
+    if authorized:
+        add_root_mock.assert_awaited_once()
+        assert "/tmp/x" in msg
+    else:
+        add_root_mock.assert_not_awaited()
+        assert "admin" in msg.lower()
 
 
 @pytest.mark.asyncio

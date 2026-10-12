@@ -1,13 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import math
 import random
 from collections.abc import Callable
 
 import aiohttp
 
+from discode.security.execution_policy import ensure_outbound_allowed
+
 logger = logging.getLogger(__name__)
+
+
+class DiscordPermanentError(RuntimeError):
+    """A non-429 4xx from Discord (deleted thread, missing access, bad request).
+
+    Retrying the same request cannot succeed.
+    """
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"Discord send_message failed: {status}")
+        self.status = status
+
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 
@@ -15,7 +31,7 @@ DISCORD_API_BASE = "https://discord.com/api/v10"
 class DiscordRestClient:
     """Async wrapper for Discord REST.
 
-    - 429: honors Retry-After (JSON body or header), unlimited retries.
+    - 429: honors Retry-After (JSON body or header), bounded retries.
     - 5xx: bounded retries with exponential backoff + jitter.
     - 4xx (non-429): raises immediately, no retry.
     """
@@ -51,7 +67,9 @@ class DiscordRestClient:
         self._on_retry_after = cb
 
     async def start(self) -> None:
-        self._session = aiohttp.ClientSession(headers=self._headers())
+        self._session = aiohttp.ClientSession(
+            headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)
+        )
 
     async def close(self) -> None:
         if self._session is not None:
@@ -63,7 +81,7 @@ class DiscordRestClient:
             raise RuntimeError("DiscordRestClient not started; call await client.start() first")
         return self._session
 
-    async def _extract_retry_after(self, resp) -> float:
+    async def _extract_retry_after(self, resp: aiohttp.ClientResponse) -> float:
         # Prefer JSON body retry_after (decimal seconds, more precise) over header.
         try:
             body = await resp.json()
@@ -87,11 +105,16 @@ class DiscordRestClient:
         nonce: str | None = None,
     ) -> str:
         url = f"{DISCORD_API_BASE}/channels/{thread_id}/messages"
-        body: dict[str, object] = {"content": content}
+        ensure_outbound_allowed()
+        body: dict[str, object] = {"content": content, "allowed_mentions": {"parse": []}}
         if nonce is not None:
             # Discord rejects nonces > 25 chars (NONCE_TYPE_TOO_LONG).
-            # Idempotency keys are 36-char UUIDs; truncate stably.
-            body["nonce"] = nonce if len(nonce) <= 25 else nonce[:25]
+            # Hash the full key, including the chunk suffix, to avoid collisions.
+            body["nonce"] = (
+                nonce
+                if len(nonce) <= 25
+                else hashlib.blake2b(nonce.encode(), digest_size=12).hexdigest()
+            )
             # enforce_nonce makes Discord actually dedupe on the nonce; without
             # it the nonce is decorative and no idempotency is provided.
             body["enforce_nonce"] = True
@@ -100,6 +123,7 @@ class DiscordRestClient:
         attempt = 0
         unarchived = False
         while True:
+            ensure_outbound_allowed()
             async with self._get_session().post(url, json=body) as resp:
                 if resp.ok:
                     data = await resp.json()
@@ -113,7 +137,12 @@ class DiscordRestClient:
                         logger.info("send_message: unarchived thread=%s after 405", thread_id)
                         continue
                 if resp.status == 429:
+                    if attempt >= self._max_retries:
+                        raise RuntimeError("Discord send_message rate-limit retry budget exhausted")
                     retry_after = await self._extract_retry_after(resp)
+                    if not math.isfinite(retry_after) or retry_after < 0 or retry_after > 60:
+                        raise RuntimeError("Discord Retry-After is outside the local retry budget")
+                    attempt += 1
                     if self._on_retry_after is not None:
                         try:
                             self._on_retry_after(thread_id, retry_after)
@@ -126,45 +155,43 @@ class DiscordRestClient:
                     continue
                 if 500 <= resp.status < 600:
                     if attempt >= self._max_retries:
-                        text = await resp.text()
                         raise RuntimeError(
-                            f"Discord send_message failed after retries: {resp.status} {text!r}"
+                            f"Discord send_message failed after retries: {resp.status}"
                         )
                     backoff = self._backoff_base * (2**attempt) + random.uniform(0, 0.1)
                     await asyncio.sleep(backoff)
                     attempt += 1
                     continue
-                text = await resp.text()
-                raise RuntimeError(f"Discord send_message failed: {resp.status} {text!r}")
+                raise DiscordPermanentError(resp.status)
 
     async def _unarchive_thread(self, thread_id: str) -> bool:
+        ensure_outbound_allowed()
         url = f"{DISCORD_API_BASE}/channels/{thread_id}"
         try:
             async with self._get_session().patch(url, json={"archived": False}) as resp:
                 if resp.ok:
                     return True
-                text = await resp.text()
-                logger.warning("unarchive_thread failed: %d %s", resp.status, text)
+                logger.warning("unarchive_thread failed: %d", resp.status)
                 return False
         except Exception:
             logger.exception("unarchive_thread raised")
             return False
 
     async def archive_thread(self, *, thread_id: str) -> None:
+        ensure_outbound_allowed()
         url = f"{DISCORD_API_BASE}/channels/{thread_id}"
         async with self._get_session().patch(url, json={"archived": True}) as resp:
             if not resp.ok:
-                text = await resp.text()
-                raise RuntimeError(f"Discord archive_thread failed: {resp.status} {text!r}")
+                raise RuntimeError(f"Discord archive_thread failed: {resp.status}")
 
     async def trigger_typing(self, *, channel_id: str) -> None:
         """POST /channels/{id}/typing — typing indicator visible for ~10s.
         Discord auto-clears it after 10s or when the bot posts a message,
         whichever is sooner. Caller must refresh on a < 10s cadence to keep it on.
         """
+        ensure_outbound_allowed()
         url = f"{DISCORD_API_BASE}/channels/{channel_id}/typing"
         async with self._get_session().post(url) as resp:
             if not resp.ok and resp.status != 429:
-                text = await resp.text()
                 # Don't raise on typing failure — it's best-effort UX.
-                logger.warning("trigger_typing failed: %d %s", resp.status, text)
+                logger.warning("trigger_typing failed: %d", resp.status)

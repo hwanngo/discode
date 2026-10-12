@@ -16,7 +16,7 @@ from discode.bot.session_service import is_session_owner_or_admin
 
 
 def _fake_db_factory(owner_id):
-    sess_row = types.SimpleNamespace(owner_id=owner_id)
+    sess_row = types.SimpleNamespace(guild_id="g1", owner_id=owner_id)
 
     async def _get(_model, _pk):
         return sess_row

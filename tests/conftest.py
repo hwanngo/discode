@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+# Imports follow intentional sys.path isolation of this worktree.
 from __future__ import annotations
 
 import sys
@@ -25,21 +27,32 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as aioredis
 from alembic.config import Config
-from testcontainers.postgres import PostgresContainer
-from testcontainers.redis import RedisContainer
+from testcontainers.community.postgres import PostgresContainer
+from testcontainers.community.redis import RedisContainer
 
 from alembic import command
 from discode.db.engine import make_engine, make_session_factory
 
 
 @pytest.fixture(scope="session")
-def postgres_container():
+def _docker_available() -> None:
+    """Skip (rather than error) container-backed tests when Docker is unreachable."""
+    try:
+        import docker
+
+        docker.from_env().ping()
+    except Exception as exc:
+        pytest.skip(f"Docker unavailable for testcontainers: {type(exc).__name__}")
+
+
+@pytest.fixture(scope="session")
+def postgres_container(_docker_available):
     with PostgresContainer("postgres:16") as pg:
         yield pg
 
 
 @pytest.fixture(scope="session")
-def redis_container():
+def redis_container(_docker_available):
     with RedisContainer("redis:7") as r:
         yield r
 
@@ -72,7 +85,9 @@ def migrated_db_url(db_url: str) -> str:
     """Run all migrations and return the db_url."""
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", db_url)
-    command.upgrade(cfg, "head")
+    with pytest.MonkeyPatch.context() as isolated:
+        isolated.setenv("DATABASE_URL", db_url)
+        command.upgrade(cfg, "head")
     return db_url
 
 
@@ -148,3 +163,28 @@ async def seed_session_in_guild(db_session, guild_with_admin_role):
     db_session.add(sess)
     await db_session.flush()
     return sess
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(monkeypatch):
+    """Never consult developer dotenv/credentials; each test owns synthetic settings."""
+    from cryptography.fernet import Fernet
+
+    from discode import config
+
+    monkeypatch.setitem(config.Settings.model_config, "env_file", None)
+    values = {
+        "DISCORD_TOKEN": "synthetic-test-token",
+        "DATABASE_URL": "postgresql+asyncpg://test:test@127.0.0.1:1/discode_test",
+        "REDIS_URL": "redis://127.0.0.1:1/0",
+        "DEPLOYMENT_SECRET_KEY": Fernet.generate_key().decode(),
+        "SESSION_ISOLATION_MODE": "trusted_host",
+        "RUNNER_CONTROL_AUTH": "synthetic-control-token",
+    }
+    for name in config.Settings.model_fields:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(config._LazySettings, "_instance", None)
+    if isinstance(config.settings, config._LazySettings):
+        monkeypatch.setattr(config.settings, "_instance", None)

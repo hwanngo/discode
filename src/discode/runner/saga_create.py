@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from discode.queues.outbox import write_outbox
 from discode.security.env_scrub import scrub_env
-from discode.security.paths import canonicalize
+from discode.security.paths import canonicalize, is_within_root
 from discode.tools.errors import UnknownTool
 from discode.tools.registry import get_adapter
 
@@ -83,9 +83,7 @@ async def revalidate_cwd(
     )
     roots = root_result.scalars().all()
     allowed = any(
-        root.user_id in ("", owner_id)
-        and (realpath == root.realpath or realpath.startswith(root.realpath + os.sep))
-        for root in roots
+        root.user_id in ("", owner_id) and is_within_root(realpath, root.realpath) for root in roots
     )
     if not allowed:
         return None, "no allowed root match"
@@ -111,7 +109,9 @@ async def run_create_job(
     from discode.db.models import (
         Session as SessionModel,
     )
+    from discode.security.execution_policy import ensure_execution_allowed
 
+    ensure_execution_allowed()
     session_uuid = _uuid.UUID(payload.session_id)
 
     # Validation result set outside the TX so we can fail in a separate TX after commit.
@@ -146,7 +146,7 @@ async def run_create_job(
                 host_id=host_id,
             )
             if deny_reason is not None:
-                _fail_reason = "host_unavailable"
+                _fail_reason = "cwd_invalid"
                 _fail_msg = f"cwd rejected for session {payload.session_id}: {deny_reason}"
             # Transaction commits here; session stays in 'creating'.
 
@@ -162,6 +162,7 @@ async def run_create_job(
         raise CreateJobError(_fail_msg or _fail_reason)
 
     # Build scrubbed session environment (docs/architecture.md).
+    unknown_tool: str | None
     async with db_factory() as _reg_session:
         try:
             adapter, _tool_def = await get_adapter(_reg_session, payload.tool)
@@ -169,7 +170,19 @@ async def run_create_job(
             logger.warning(
                 "create job: unknown tool %s for session %s", exc.name, payload.session_id
             )
-            raise CreateJobError(f"unknown or disabled tool: {exc.name}") from exc
+            unknown_tool = exc.name
+        else:
+            unknown_tool = None
+    if unknown_tool is not None:
+        # Permanent: fail now instead of retrying until the creation watchdog fires.
+        await _fail_and_notify(
+            db_factory,
+            session_id=payload.session_id,
+            guild_id=payload.guild_id,
+            thread_id=payload.thread_id,
+            status_reason="tool_unavailable",
+        )
+        return
     # Tools that take a caller-assigned session id (resume_token_source=
     # "caller_uuid") need the token to exist before turn one, so exec_cmd names
     # the same session on every turn. A token carried in on the payload
@@ -256,7 +269,7 @@ async def run_create_job(
                     "thread_id": payload.thread_id,
                     "notice_type": "session_running",
                     "order_after_seq": 0,
-                    "message": "",
+                    "message": "✅ Session ready. Send your messages in this thread.",
                 },
             )
 
@@ -292,11 +305,18 @@ async def _fail_and_notify(
     session_uuid = _uuid.UUID(session_id)
     async with db_factory() as db:
         async with db.begin():
-            await db.execute(
+            failed = await db.scalar(
                 update(SessionModel)
-                .where(SessionModel.id == session_uuid)
+                .where(SessionModel.id == session_uuid, SessionModel.status == "creating")
                 .values(status="failed", status_reason=status_reason)
+                .returning(SessionModel.id)
             )
+            if failed is None:
+                # Already moved on (e.g. the watchdog failed it); don't notify twice.
+                return
+            from discode.db.accessors.supersede import release_superseded
+
+            await release_superseded(db, session_id)
             db.add(
                 Event(
                     session_id=session_uuid,

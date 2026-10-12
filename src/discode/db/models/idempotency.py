@@ -11,7 +11,10 @@ from .base import Base
 
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
-    __table_args__ = (sa.PrimaryKeyConstraint("envelope_type", "idempotency_key"),)
+    __table_args__ = (
+        sa.PrimaryKeyConstraint("envelope_type", "idempotency_key"),
+        sa.Index("idempotency_expires_at_idx", "expires_at"),
+    )
 
     envelope_type: Mapped[str] = mapped_column(sa.Text, nullable=False)
     idempotency_key: Mapped[str] = mapped_column(sa.Text, nullable=False)

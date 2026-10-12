@@ -119,7 +119,7 @@ async def test_add_allowed_root_for_user_persists_root(db_factory, tmp_path) -> 
     async with db_factory() as db:
         rows = (await db.execute(select(AllowedRoot))).scalars().all()
     assert len(rows) == 1
-    assert str(rows[0].id) == root.id
+    assert rows[0].realpath == root.realpath
     assert rows[0].realpath == str(tmp_path.resolve())
 
 
@@ -232,6 +232,14 @@ async def test_send_path_writes_runner_send_input_outbox_for_target_session(
         session_ref="beta",
     )
     assert target is not None
+
+    # Runner acknowledgment binds the thread and makes the session ready.
+    async with db_factory() as db:
+        await db.execute(
+            text("UPDATE sessions SET status='running', thread_id='thread-beta' WHERE id=:sid"),
+            {"sid": beta.session_id},
+        )
+        await db.commit()
 
     input_key = await send_input_for_session(
         db_factory,

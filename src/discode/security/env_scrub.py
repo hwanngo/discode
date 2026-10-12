@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+FORBIDDEN_ENV = frozenset(
+    {
+        "DISCORD_TOKEN",
+        "DATABASE_URL",
+        "REDIS_URL",
+        "DEPLOYMENT_SECRET_KEY",
+        "RUNNER_CONTROL_AUTH",
+        "PLATFORM_ADMIN_USER_IDS",
+        "EMERGENCY_STOP",
+    }
+)
+
 BASE_ALLOWED: frozenset[str] = frozenset(
     {
         "PATH",
@@ -19,5 +31,5 @@ def scrub_env(
     extra_allowed: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """Return copy of raw_env keeping only BASE_ALLOWED | extra_allowed keys."""
-    allowed = BASE_ALLOWED | extra_allowed
+    allowed = (BASE_ALLOWED | extra_allowed) - FORBIDDEN_ENV
     return {k: v for k, v in raw_env.items() if k in allowed}

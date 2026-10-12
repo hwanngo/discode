@@ -26,7 +26,7 @@ async def recover_sessions(
         result = await db.execute(
             text("""
                 SELECT id, tool, cwd_realpath, guild_id, thread_id,
-                       tool_resume_token, owner_id
+                       tool_resume_token, owner_id, lifecycle_version
                 FROM sessions
                 WHERE host_id = :hid AND status IN ('running', 'idle', 'resuming')
             """),
@@ -62,9 +62,11 @@ async def recover_sessions(
                         await db.execute(
                             text(
                                 "UPDATE sessions SET status='failed',"
-                                " status_reason='cwd_invalid' WHERE id=:sid"
+                                " status_reason='cwd_invalid' WHERE id=:sid "
+                                "AND lifecycle_version=:version "
+                                "AND status IN ('running','idle','resuming')"
                             ),
-                            {"sid": session_id},
+                            {"sid": session_id, "version": row[7]},
                         )
                 failed += 1
                 continue
@@ -87,9 +89,11 @@ async def recover_sessions(
                     await db.execute(
                         text(
                             "UPDATE sessions SET status='orphaned',"
-                            " status_reason='runner_lost' WHERE id=:sid"
+                            " status_reason='runner_lost' WHERE id=:sid "
+                            "AND lifecycle_version=:version "
+                            "AND status IN ('running','idle','resuming')"
                         ),
-                        {"sid": session_id},
+                        {"sid": session_id, "version": row[7]},
                     )
             failed += 1
 

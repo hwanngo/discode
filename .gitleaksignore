@@ -1,0 +1,13 @@
+# Historical fixture-only matches, inspected during audit. No directory allowlisting.
+76d07df6ce2d92915a5a964088edbf7424f13792:tests/bootstrap/test_runtime.py:fernet-key:17
+76d07df6ce2d92915a5a964088edbf7424f13792:tests/config/test_settings.py:fernet-key:13
+76d07df6ce2d92915a5a964088edbf7424f13792:tests/tools/test_adapter_exec_cmd.py:generic-api-key:190
+15463b113a4d6b0498a874cd86a64422ec4d64f9:tests/bootstrap/test_runtime.py:fernet-key:17
+15463b113a4d6b0498a874cd86a64422ec4d64f9:tests/config/test_settings.py:fernet-key:13
+15463b113a4d6b0498a874cd86a64422ec4d64f9:tests/tools/test_adapter_exec_cmd.py:generic-api-key:190
+b43be885b848e2d52997013f6130458b2a3f8d58:tests/bootstrap/test_runtime.py:fernet-key:17
+b43be885b848e2d52997013f6130458b2a3f8d58:tests/config/test_settings.py:fernet-key:13
+b43be885b848e2d52997013f6130458b2a3f8d58:tests/tools/test_adapter_exec_cmd.py:generic-api-key:190
+ccf442f5e488a9b605efeadc9be96d2e010a2ed7:tests/bootstrap/test_runtime.py:fernet-key:17
+ccf442f5e488a9b605efeadc9be96d2e010a2ed7:tests/config/test_settings.py:fernet-key:13
+ccf442f5e488a9b605efeadc9be96d2e010a2ed7:tests/tools/test_adapter_exec_cmd.py:generic-api-key:190

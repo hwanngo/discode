@@ -66,3 +66,28 @@ class TestScrubEnv:
         raw = {"PATH": "/usr/bin"}
         result = scrub_env(raw)
         assert result == {"PATH": "/usr/bin"}
+
+
+def test_infrastructure_secrets_cannot_be_allowlisted() -> None:
+    assert (
+        scrub_env(
+            {"DATABASE_URL": "private", "RUNNER_CONTROL_AUTH": "private"},
+            frozenset({"DATABASE_URL", "RUNNER_CONTROL_AUTH"}),
+        )
+        == {}
+    )
+
+
+def test_execution_policy_requires_explicit_trusted_host() -> None:
+    import pytest
+
+    from discode.config import get_settings
+    from discode.security.execution_policy import ExecutionDenied, ensure_execution_allowed
+
+    trusted = get_settings().model_copy(update={"SESSION_ISOLATION_MODE": "trusted_host"})
+    ensure_execution_allowed(trusted)
+    for mode in ("uid_pool", "user_namespace", "platform_equivalent"):
+        with pytest.raises(ExecutionDenied, match="unsupported_isolation_mode"):
+            ensure_execution_allowed(trusted.model_copy(update={"SESSION_ISOLATION_MODE": mode}))
+    with pytest.raises(ExecutionDenied, match="emergency_stop"):
+        ensure_execution_allowed(trusted.model_copy(update={"EMERGENCY_STOP": 1}))

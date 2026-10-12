@@ -63,8 +63,6 @@ REGISTRY = _MetricsRegistry()
 OUTBOX_PUBLISH_TOTAL = "dab_outbox_publish_total"
 OUTBOX_LAG_ENTRIES = "dab_outbox_lag_entries"
 OUTBOX_OLDEST_PENDING_SECONDS = "dab_outbox_oldest_pending_seconds"
-DISPATCHER_ROUTE_DEPTH = "dispatcher_route_depth"
-RUNNER_HEARTBEAT_LAG = "runner_heartbeat_lag_seconds"
 
 
 def record_outbox_publish(producer: str) -> None:
@@ -74,3 +72,58 @@ def record_outbox_publish(producer: str) -> None:
 def record_outbox_lag(pending_count: int, oldest_seconds: float) -> None:
     REGISTRY.set_gauge(OUTBOX_LAG_ENTRIES, float(pending_count))
     REGISTRY.set_gauge(OUTBOX_OLDEST_PENDING_SECONDS, oldest_seconds)
+
+
+def render_metrics() -> bytes:
+    """Expose the registry in Prometheus text format (stable label order)."""
+    import json
+
+    lines = []
+    for key, value in list(REGISTRY._counters.items()) + list(REGISTRY._gauges.items()):
+        name, _, labels = key.partition(":")
+        suffix = ""
+        if labels:
+            pairs = [part.split("=", 1) for part in labels.split(",")]
+            suffix = "{" + ",".join(f"{k}={json.dumps(v)}" for k, v in pairs) + "}"
+        lines.append(f"{name}{suffix} {value}\n")
+    return "".join(lines).encode()
+
+
+def start_metrics_server(bind: str) -> object:
+    """Start a loopback-only HTTP exporter; caller owns shutdown."""
+    import ipaddress
+    import socket
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    host, port = bind.rsplit(":", 1)
+    host = host.strip("[]")  # accept bracketed IPv6, e.g. [::1]:9101
+    if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
+        raise ValueError("Metrics bind must be loopback; use an authenticated proxy remotely")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == "/healthz":
+                # Liveness only: the process is up and serving. Readiness depends
+                # on Postgres/Redis; watch the error counters for those.
+                body, content_type = b"ok\n", "text/plain"
+            elif self.path == "/metrics":
+                body, content_type = render_metrics(), "text/plain; version=0.0.4"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    class Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+
+    server = Server((host, int(port)), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server

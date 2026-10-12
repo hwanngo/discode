@@ -1,0 +1,25 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        run: pipx install uv==0.12.23
+      - run: uv sync --frozen --group dev --python 3.14
+      - run: uv run --frozen ruff check src tests scripts
+      - run: uv run --frozen ruff format --check src tests scripts
+      - run: uv run --frozen mypy src/discode --strict
+      # Testcontainers provisions isolated PostgreSQL/Redis on the runner's Docker daemon.
+      - run: docker info
+      - run: uv run --frozen pytest -q
+      - run: uv build
+      - name: Audit locked dependencies
+        shell: bash
+        run: |
+          set -o pipefail
+          uv export --frozen --no-emit-project --format requirements-txt | uvx pip-audit --disable-pip -r /dev/stdin

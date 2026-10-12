@@ -6,17 +6,14 @@ import pty
 import signal
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 
 class ExecFailed(Exception):
-    """Subprocess exited with non-zero status."""
+    """Subprocess exited with non-zero status; raw streams are not in the log message."""
 
     def __init__(self, exit_code: int, stderr: str, stdout: str = "") -> None:
-        # Include both streams in the message: some tools (claude --print)
-        # write errors to stdout while still exiting non-zero.
-        super().__init__(
-            f"exec failed: exit={exit_code} stderr={stderr[:200]!r} stdout={stdout[:200]!r}"
-        )
+        super().__init__(f"exec failed: exit={exit_code}")
         self.exit_code = exit_code
         self.stderr = stderr
         self.stdout = stdout
@@ -33,15 +30,24 @@ class ExecResult:
     exit_code: int
 
 
-_DEFAULT_MAX_OUTPUT = 1 * 1024 * 1024  # 1 MiB
+_DEFAULT_MAX_OUTPUT = 1024 * 1024
+# Output beyond max_output_bytes is drained and discarded; only a runaway stream
+# past this many bytes per stream gets the process group killed.
+_DEFAULT_KILL_OUTPUT = 16 * 1024 * 1024
+# After the main process exits, background children that inherited the output
+# descriptors get this long before the group is killed so reads can finish.
+_PIPE_GRACE_SECONDS = 2.0
+# Upper bound on cleanup; a descendant that escaped the group (setsid) may keep
+# a descriptor open forever.
+_REAP_TIMEOUT_SECONDS = 5.0
+_EXIT_POLL_SECONDS = 0.05
 
 
 class ExecSession:
-    """Run a single subprocess turn and capture its stdout.
+    """Run one process group with bounded output and cancellation-safe cleanup.
 
-    PTY mode allocates a pseudo-terminal so tools that refuse non-tty stdout
-    (codex, opencode) work. Plain-pipe mode is faster and simpler for tools
-    that don't need it (claude --print).
+    This primitive is not a sandbox. The runner must enforce its execution policy
+    before constructing it. A deadline covers both output collection and process exit.
     """
 
     def __init__(
@@ -52,7 +58,12 @@ class ExecSession:
         env: dict[str, str],
         use_pty: bool,
         max_output_bytes: int = _DEFAULT_MAX_OUTPUT,
+        kill_output_bytes: int | None = None,
     ) -> None:
+        if max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be positive")
+        self._kill_bytes = max(kill_output_bytes or _DEFAULT_KILL_OUTPUT, max_output_bytes)
+        self._killed_for_output = False
         self._argv = list(argv)
         self._cwd = cwd
         self._env = env
@@ -66,210 +77,189 @@ class ExecSession:
 
     @staticmethod
     def _killpg(proc: asyncio.subprocess.Process) -> None:
-        """SIGKILL the child's whole process group so descendants don't orphan.
-
-        The child is spawned with start_new_session=True, making it a session/
-        process-group leader. Killing the group reaps build/test grandchildren
-        too. Guarded against the process already being gone.
-        """
+        # start_new_session makes pid the group id. Use it even if the leader
+        # has exited, so descendants retaining output descriptors are killed.
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
 
     async def _read_bounded(
         self,
         stream: asyncio.StreamReader | None,
-        on_truncate: Callable[[], None],
+        on_runaway: Callable[[], None],
     ) -> tuple[bytes, bool]:
-        """Stream-read up to ``max_bytes`` then stop, so memory stays bounded
-        no matter how much the process emits. Returns (data, truncated).
-
-        The moment the cap is exceeded ``on_truncate`` is invoked so the caller
-        can kill the process group immediately — otherwise a process still
-        writing to the *other* pipe (which we've stopped reading) would block on
-        a full kernel buffer and never reach EOF, deadlocking the drain.
-        """
+        """Keep up to max_output_bytes, drain the rest; call on_runaway past the kill cap."""
         if stream is None:
             return b"", False
         chunks: list[bytes] = []
-        total = 0
-        truncated = False
-        while total < self._max_bytes:
-            data = await stream.read(min(65536, self._max_bytes - total))
-            if not data:
-                break
-            chunks.append(data)
-            total += len(data)
-        else:
-            # Cap reached; peek one more byte to see if output is still pending.
-            extra = await stream.read(1)
-            if extra:
-                truncated = True
-                on_truncate()
-        return b"".join(chunks), truncated
+        kept_total = 0
+        seen = 0
+        try:
+            while data := await stream.read(65536):
+                seen += len(data)
+                kept = data[: self._max_bytes - kept_total]
+                if kept:
+                    chunks.append(kept)
+                    kept_total += len(kept)
+                if seen > self._kill_bytes and not self._killed_for_output:
+                    self._killed_for_output = True
+                    on_runaway()
+                # Keep draining after truncation or a kill: a paused pipe transport
+                # would otherwise block the writer and Process.wait().
+        except asyncio.CancelledError:
+            # Only ExecSession cancels its own readers (a descriptor held by a
+            # process outside the group never reaches EOF); keep what was read.
+            pass
+        return b"".join(chunks), seen > kept_total
+
+    @staticmethod
+    async def _discard(stream: asyncio.StreamReader | None) -> None:
+        if stream is not None:
+            while await stream.read(65536):
+                pass
+
+    async def _reap(self, proc: asyncio.subprocess.Process) -> None:
+        self._killpg(proc)
+        try:
+            async with asyncio.timeout(_REAP_TIMEOUT_SECONDS):
+                await asyncio.gather(
+                    self._discard(proc.stdout), self._discard(proc.stderr), proc.wait()
+                )
+        except TimeoutError:
+            # A descendant outside the process group still holds a descriptor.
+            pass
+
+    async def _await_streams(
+        self, proc: asyncio.subprocess.Process, readers: Sequence[asyncio.Future[Any]]
+    ) -> None:
+        """Wait for the main process, then give inherited descriptors a short grace."""
+        # Not proc.wait(): asyncio's wait() also blocks until every pipe closes,
+        # which a backgrounded child holding stdout would delay until the timeout.
+        while proc.returncode is None:
+            await asyncio.sleep(_EXIT_POLL_SECONDS)
+        _, pending = await asyncio.wait(readers, timeout=_PIPE_GRACE_SECONDS)
+        # Background children (e.g. `server &`) must not outlive the turn unsupervised.
+        self._killpg(proc)
+        if pending:
+            # A descendant that left the group (setsid) can hold a descriptor forever.
+            _, pending = await asyncio.wait(pending, timeout=_REAP_TIMEOUT_SECONDS)
+            for reader in pending:
+                reader.cancel()
+            if pending:
+                await asyncio.wait(pending)
+
+    def _result(
+        self, stdout: bytes, stderr: bytes, out_truncated: bool, err_truncated: bool, code: int
+    ) -> ExecResult:
+        notice = f"\n[truncated at {self._max_bytes} bytes]"
+        out = stdout.decode("utf-8", errors="replace") + (notice if out_truncated else "")
+        err = stderr.decode("utf-8", errors="replace") + (notice if err_truncated else "")
+        if self._killed_for_output:
+            raise ExecFailed(
+                code or -signal.SIGKILL,
+                err + f"\n[killed: output exceeded {self._kill_bytes} bytes]",
+                out,
+            )
+        if code:
+            raise ExecFailed(code, err, out)
+        return ExecResult(out, err, code)
 
     async def _run_pipe(self, timeout: float) -> ExecResult:
         proc = await asyncio.create_subprocess_exec(
             *self._argv,
             cwd=self._cwd,
             env=self._env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
-
-        killed_for_truncation = False
-
-        def _on_truncate() -> None:
-            nonlocal killed_for_truncation
-            killed_for_truncation = True
-            # Kill the group now so any blocked writer is released and both
-            # bounded reads can observe EOF promptly.
-            self._killpg(proc)
-
-        async def _drain() -> tuple[bytes, bool, bytes]:
-            # Read both streams concurrently, each bounded.
-            stdout_res, stderr_res = await asyncio.gather(
-                self._read_bounded(proc.stdout, _on_truncate),
-                self._read_bounded(proc.stderr, _on_truncate),
-            )
-            stdout_b, out_trunc = stdout_res
-            stderr_b, _ = stderr_res
-            return stdout_b, out_trunc, stderr_b
-
+        out_task = asyncio.ensure_future(
+            self._read_bounded(proc.stdout, lambda: self._killpg(proc))
+        )
+        err_task = asyncio.ensure_future(
+            self._read_bounded(proc.stderr, lambda: self._killpg(proc))
+        )
         try:
-            stdout_b, truncated, stderr_b = await asyncio.wait_for(_drain(), timeout=timeout)
-        except TimeoutError:
-            self._killpg(proc)
-            await proc.wait()
-            raise ExecTimeout(f"exec exceeded {timeout}s")
-
-        await proc.wait()
-
-        stdout = stdout_b.decode("utf-8", errors="replace")
-        if truncated:
-            stdout += f"\n[truncated at {self._max_bytes} bytes]"
-        stderr = stderr_b.decode("utf-8", errors="replace")
-        exit_code = proc.returncode or 0
-        # When we force-killed after truncation, a non-zero/None exit is expected
-        # and must not be reported as a failure.
-        if exit_code != 0 and not killed_for_truncation:
-            raise ExecFailed(exit_code, stderr, stdout)
-        return ExecResult(text=stdout, stderr=stderr, exit_code=exit_code)
+            async with asyncio.timeout(timeout):
+                await self._await_streams(proc, (out_task, err_task))
+        except BaseException as exc:
+            out_task.cancel()
+            err_task.cancel()
+            await asyncio.gather(out_task, err_task, return_exceptions=True)
+            await asyncio.shield(self._reap(proc))
+            if isinstance(exc, TimeoutError):
+                raise ExecTimeout(f"exec exceeded {timeout}s") from exc
+            raise
+        out, out_truncated = out_task.result()
+        err, err_truncated = err_task.result()
+        return self._result(out, err, out_truncated, err_truncated, proc.returncode or 0)
 
     async def _run_pty(self, timeout: float) -> ExecResult:
         master_fd, slave_fd = pty.openpty()
-        # Set master non-blocking so the reader callback never blocks the loop.
-        os.set_blocking(master_fd, False)
+        loop = asyncio.get_running_loop()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *self._argv,
-                cwd=self._cwd,
-                env=self._env,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+            os.set_blocking(master_fd, False)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *self._argv,
+                    cwd=self._cwd,
+                    env=self._env,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+            finally:
+                os.close(slave_fd)
+
+            chunks: list[bytes] = []
+            total = 0
+            seen = 0
+            eof = asyncio.Event()
+
+            def readable() -> None:
+                nonlocal total, seen
+                try:
+                    data = os.read(master_fd, 65536)
+                except BlockingIOError:
+                    return
+                except OSError:
+                    data = b""
+                if not data:
+                    loop.remove_reader(master_fd)
+                    eof.set()
+                    return
+                seen += len(data)
+                kept = data[: self._max_bytes - total]
+                if kept:
+                    chunks.append(kept)
+                    total += len(kept)
+                if seen > self._kill_bytes and not self._killed_for_output:
+                    self._killed_for_output = True
+                    self._killpg(proc)
+
+            loop.add_reader(master_fd, readable)
+            err_task = asyncio.ensure_future(
+                self._read_bounded(proc.stderr, lambda: self._killpg(proc))
+            )
+            eof_task = asyncio.ensure_future(eof.wait())
+            try:
+                async with asyncio.timeout(timeout):
+                    await self._await_streams(proc, (err_task, eof_task))
+            except BaseException as exc:
+                err_task.cancel()
+                eof_task.cancel()
+                await asyncio.gather(err_task, eof_task, return_exceptions=True)
+                await asyncio.shield(self._reap(proc))
+                if isinstance(exc, TimeoutError):
+                    raise ExecTimeout(f"exec exceeded {timeout}s") from exc
+                raise
+            err, err_truncated = err_task.result()
+            return self._result(
+                b"".join(chunks), err, seen > total, err_truncated, proc.returncode or 0
             )
         finally:
-            # Parent doesn't need the slave end; child inherited it.
-            os.close(slave_fd)
-
-        loop = asyncio.get_running_loop()
-
-        chunks: list[bytes] = []
-        total = 0
-        truncated = False
-        eof_event = asyncio.Event()
-
-        def _on_readable() -> None:
-            nonlocal total, truncated
-            try:
-                data = os.read(master_fd, 4096)
-            except OSError:
-                # EIO / child exited — PTY hangup
-                loop.remove_reader(master_fd)
-                eof_event.set()
-                return
-            if not data:
-                loop.remove_reader(master_fd)
-                eof_event.set()
-                return
-            if not truncated:
-                if total + len(data) > self._max_bytes:
-                    keep = self._max_bytes - total
-                    chunks.append(data[:keep])
-                    total = self._max_bytes
-                    truncated = True
-                    # Cap reached: stop reading and kill the group so the
-                    # process can't keep producing unbounded output.
-                    loop.remove_reader(master_fd)
-                    self._killpg(proc)
-                    eof_event.set()
-                else:
-                    chunks.append(data)
-                    total += len(data)
-
-        loop.add_reader(master_fd, _on_readable)
-
-        stderr_b = b""
-        timed_out = False
-        try:
-            # Wait for both process exit and PTY EOF (may arrive slightly after exit).
-            exit_task = asyncio.ensure_future(proc.wait())
-            stderr_task = asyncio.ensure_future(proc.stderr.read()) if proc.stderr else None
-            eof_task = asyncio.ensure_future(eof_event.wait())
-
-            tasks_to_gather: list[asyncio.Future] = [exit_task, eof_task]
-            if stderr_task is not None:
-                tasks_to_gather.append(stderr_task)
-
-            try:
-                await asyncio.wait_for(asyncio.gather(*tasks_to_gather), timeout=timeout)
-            except TimeoutError:
-                timed_out = True
-                self._killpg(proc)
-                await proc.wait()
-            finally:
-                # Cancel any tasks that are still pending.
-                for t in tasks_to_gather:
-                    if not t.done():
-                        t.cancel()
-                        try:
-                            await t
-                        except asyncio.CancelledError, Exception:
-                            pass
-
-            if stderr_task is not None and not stderr_task.cancelled() and stderr_task.done():
-                try:
-                    stderr_b = stderr_task.result()
-                except Exception:
-                    stderr_b = b""
-        finally:
-            try:
-                loop.remove_reader(master_fd)
-            except Exception:
-                pass
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-
-        if timed_out:
-            raise ExecTimeout(f"exec exceeded {timeout}s")
-
-        stdout = b"".join(chunks).decode("utf-8", errors="replace")
-        if truncated:
-            stdout += f"\n[truncated at {self._max_bytes} bytes]"
-        stderr = stderr_b.decode("utf-8", errors="replace")
-        exit_code = proc.returncode or 0
-        if exit_code != 0:
-            raise ExecFailed(exit_code, stderr, stdout)
-        return ExecResult(text=stdout, stderr=stderr, exit_code=exit_code)
-
-    def _decode_truncate(self, data: bytes) -> str:
-        if len(data) > self._max_bytes:
-            text = data[: self._max_bytes].decode("utf-8", errors="replace")
-            return text + f"\n[truncated at {self._max_bytes} bytes]"
-        return data.decode("utf-8", errors="replace")
+            loop.remove_reader(master_fd)
+            os.close(master_fd)

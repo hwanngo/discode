@@ -57,7 +57,8 @@ def test_argv_resume_tokens_no_token_placeholder_allowed_for_sentinel():
             resume_token_pattern="opencode",
         )
     )
-    assert a.exec_cmd("hi", resume_token="opencode") == ["t", "--continue", "hi"]
+    with pytest.raises(ValueError, match="sentinel resume is disabled"):
+        a.exec_cmd("hi", resume_token="opencode")
 
 
 def test_argv_resume_tokens_no_token_placeholder_rejected_for_non_sentinel():
@@ -285,3 +286,31 @@ def test_reply_stderr_fallback_on_empty_stdout():
 def test_reply_stderr_fallback_prefers_stdout_when_present():
     a = GenericAdapter(_row(reply_extractor="stderr_fallback"))
     assert a.extract_reply("stdout msg", "stderr msg") == "stdout msg"
+
+
+def test_leading_dash_prompt_requires_explicit_option_boundary():
+    with pytest.raises(ValueError, match="leading-dash"):
+        GenericAdapter(_row()).exec_cmd("--dangerous", resume_token=None)
+    assert GenericAdapter(_row(argv_suffix=["--", "{prompt}"])).exec_cmd(
+        "--dangerous", resume_token=None
+    ) == ["t", "--", "--dangerous"]
+
+
+def test_caller_uuid_does_not_require_parse_pattern():
+    adapter = GenericAdapter(_row(resume_token_source="caller_uuid", resume_token_pattern=None))
+    assert adapter.mint_initial_token()
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"argv_prefix": [1]},
+        {"uses_pty": "false"},
+        {"env_passthrough": ["DATABASE_URL"]},
+        {"resume_token_source": "stdout_regex", "resume_token_pattern": "missing-capture"},
+        {"resume_token_source": "stdout_regex", "resume_token_pattern": "("},
+    ],
+)
+def test_malformed_definitions_rejected_before_execution(updates):
+    with pytest.raises(BadToolDefinition):
+        GenericAdapter(_row(**updates))

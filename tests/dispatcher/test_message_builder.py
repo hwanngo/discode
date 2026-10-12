@@ -96,3 +96,35 @@ def test_apply_pattern_redaction_no_match_leaves_content_unchanged() -> None:
     content = "hello world, nothing secret here"
     result = apply_pattern_redaction(content)
     assert result == content
+
+
+def test_leading_newline_always_makes_progress() -> None:
+    # Regression: the second iteration previously split at offset zero forever.
+    for content in ["a\n" + "x" * 2100, "\n" + "x" * 9000, "\n" * 5000]:
+        chunks = build_message(content)
+        assert "".join(chunks) == content
+        assert all(0 < len(chunk) <= MAX_DISCORD_MESSAGE_LEN for chunk in chunks)
+
+
+def test_build_message_keeps_code_fences_balanced() -> None:
+    """Audit 2026-10-12: a code block split across chunks is closed and reopened."""
+    code = "\n".join(f"line {i} = {'x' * 40}" for i in range(150))
+    content = "Here is the fix:\n```python\n" + code + "\n```\nDone."
+    chunks = build_message(content)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= MAX_DISCORD_MESSAGE_LEN
+        assert chunk.count("```") % 2 == 0, chunk[:80]
+    assert chunks[1].startswith("```python\n")
+    body = "".join(chunks)
+    assert all(f"line {i} =" in body for i in range(150))
+    assert body.rstrip().endswith("Done.")
+
+
+def test_build_message_fence_with_hard_split() -> None:
+    content = "```\n" + "y" * 5000 + "\n```"
+    chunks = build_message(content)
+    for chunk in chunks:
+        assert len(chunk) <= MAX_DISCORD_MESSAGE_LEN
+        assert chunk.count("```") % 2 == 0
+    assert "".join(chunks).count("y") == 5000

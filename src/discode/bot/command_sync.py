@@ -19,10 +19,24 @@ from discord.ext import commands
 logger = logging.getLogger(__name__)
 
 # Commands that belong in the global scope (stable, slow-moving)
-GLOBAL_COMMAND_NAMES: frozenset[str] = frozenset({"session", "diff", "root", "start"})
+GLOBAL_COMMAND_NAMES: frozenset[str] = frozenset(
+    {
+        "session",
+        "diff",
+        "root",
+        "start",
+        "send",
+        "stop",
+        "help",
+        "archive",
+        "resume",
+        "restart",
+        "invite",
+    }
+)
 
 # Commands that belong in the guild scope (fast-moving admin/setup)
-GUILD_COMMAND_NAMES: frozenset[str] = frozenset({"setup"})
+GUILD_COMMAND_NAMES: frozenset[str] = frozenset({"setup", "tool"})
 
 
 @dataclass
@@ -71,6 +85,24 @@ async def reconcile_commands(
 
     Key constraint: tree.clear_commands is NEVER called.
     """
+    # Move admin groups into each guild scope before synchronizing. Keep a
+    # process-local reference so a second reconciliation can add newly joined guilds.
+    from discode.config import settings
+
+    guild_only = settings.DISCORD_GUILD_COMMANDS_ONLY
+    admin_commands = getattr(bot, "_guild_admin_commands", None)
+    if admin_commands is None:
+        admin_commands = [
+            command
+            for command in bot.tree.get_commands()
+            if guild_only or command.name in GUILD_COMMAND_NAMES
+        ]
+        setattr(bot, "_guild_admin_commands", admin_commands)
+    for command in admin_commands:
+        bot.tree.remove_command(command.name)
+        for guild_id in guild_ids:
+            bot.tree.add_command(command, guild=discord.Object(id=guild_id), override=True)
+
     # --- Step 1: baseline for global scope ---
     before_global: set[str] = {cmd.name for cmd in bot.tree.get_commands(guild=None)}
 
@@ -120,3 +152,16 @@ async def reconcile_commands(
         guild_removed=total_guild_removed,
         timestamp=dt.datetime.now(dt.UTC).isoformat(),
     )
+
+
+async def sync_joined_guild(bot: commands.Bot, guild_id: int) -> None:
+    """Register guild-scoped commands for a guild joined after startup and sync it."""
+    admin_commands = getattr(bot, "_guild_admin_commands", None)
+    if admin_commands is None:
+        # on_ready has not reconciled yet; it covers every guild the bot is in.
+        return
+    guild_obj = discord.Object(id=guild_id)
+    for command in admin_commands:
+        bot.tree.add_command(command, guild=guild_obj, override=True)
+    await bot.tree.sync(guild=guild_obj)
+    logger.info("command_sync: registered commands for joined guild %s", guild_id)

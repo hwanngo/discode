@@ -90,7 +90,7 @@ async def _check_claude_print() -> None:
     sess = ExecSession(
         argv=argv,
         cwd="/tmp",
-        env={**os.environ},
+        env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "ANTHROPIC_API_KEY"}},
         use_pty=adapter.exec_uses_pty(),
     )
     try:
@@ -107,7 +107,10 @@ async def main() -> None:
     await _check_settings()
     await _check_binaries()
     await _check_exec_session()
-    await _check_claude_print()
+    if "--live" in sys.argv:
+        await _check_claude_print()
+    else:
+        print("Provider probe skipped; --live opts into database/provider access and spend.")
     print("\nDone.")
 
 
