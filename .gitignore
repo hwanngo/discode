@@ -249,3 +249,6 @@ docs.local/
 # Linux/XDG per-user data dirs that some tools drop into the project root
 .local/
 .ai-workspace/
+
+# Local-only audit notes (vulnerability details; repo is public)
+docs/private/
